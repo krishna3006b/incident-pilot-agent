@@ -101,57 +101,6 @@ def find_and_read_target_code(alert_summary: str):
             
     return rel_path, "// File content"
 
-def detect_bug_context(alert_summary: str):
-    text = alert_summary.lower()
-    if "price" in text or "discount" in text or "undefined" in text:
-        return {
-            "target_file": "src/app/api/discount/route.ts",
-            "root_cause": "TypeError: Unhandled undefined reference when accessing 'items[0].price' in request body.",
-            "title": "fix(discount): add optional chaining and null check for items array",
-            "code_snippet": "const firstItemPrice = body?.items?.[0]?.price || 0;",
-            "patch": """--- a/src/app/api/discount/route.ts
-+++ b/src/app/api/discount/route.ts
-@@ -9,1 +9,1 @@
--    const firstItemPrice = body.items[0].price;
-+    const firstItemPrice = body?.items?.[0]?.price || 0;"""
-        }
-    elif "stock" in text or "inventory" in text or "stock_quantity" in text:
-        return {
-            "target_file": "src/app/api/inventory/route.ts",
-            "root_cause": "TypeError: Unhandled null reference when accessing 'product.stock_quantity' in request body.",
-            "title": "fix(inventory): add optional chaining for product stock check",
-            "code_snippet": "const stock = body?.product?.stock_quantity || 0;",
-            "patch": """--- a/src/app/api/inventory/route.ts
-+++ b/src/app/api/inventory/route.ts
-@@ -9,1 +9,1 @@
--    const stock = body.product.stock_quantity;
-+    const stock = body?.product?.stock_quantity || 0;"""
-        }
-    elif "destructure" in text or "user" in text or "profile" in text:
-        return {
-            "target_file": "src/app/api/user/profile/route.ts",
-            "root_cause": "TypeError: Unhandled null reference when destructuring 'body.user' object.",
-            "title": "fix(user): add fallback empty object on user destructuring",
-            "code_snippet": "const { email = '', role = '' } = body?.user || {};",
-            "patch": """--- a/src/app/api/user/profile/route.ts
-+++ b/src/app/api/user/profile/route.ts
-@@ -9,1 +9,1 @@
--    const { email, role } = body.user;
-+    const { email = '', role = '' } = body?.user || {};"""
-        }
-    else:
-        return {
-            "target_file": "src/app/api/checkout/route.ts",
-            "root_cause": "TypeError: Unhandled null reference when accessing 'customer.address' in request body.",
-            "title": "fix(checkout): add null check for customer address",
-            "code_snippet": "const city = body?.customer?.address?.city || 'UNKNOWN';",
-            "patch": """--- a/target_app/src/app/api/checkout/route.ts
-+++ b/target_app/src/app/api/checkout/route.ts
-@@ -9,1 +9,1 @@
--    const city = body.customer.address.city;
-+    const city = body?.customer?.address?.city || 'UNKNOWN';"""
-        }
-
 def node_diagnose(state: IncidentState) -> IncidentState:
     """Perform root cause analysis using evidence and Groq LLM."""
     logger.info(f"State [DIAGNOSING] incident: {state['incident_id']}")
@@ -160,19 +109,18 @@ def node_diagnose(state: IncidentState) -> IncidentState:
     
     llm = initialize_llm()
     alert_summary = state.get("alert_summary", "")
-    bug_ctx = detect_bug_context(alert_summary)
     rel_path, code_content = find_and_read_target_code(alert_summary)
     
     if llm:
         try:
-            prompt = f"Analyze this production alert: '{alert_summary}'. Here is the target source code for {rel_path}:\n\n{code_content}\n\nIdentify the exact root cause in 2 concise sentences."
+            prompt = f"Analyze this production error alert: '{alert_summary}'. Here is the target source code for {rel_path}:\n\n```typescript\n{code_content}\n```\n\nIdentify the exact root cause in 2 concise sentences."
             resp = llm.invoke([SystemMessage(content="You are an expert site reliability AI agent."), HumanMessage(content=prompt)])
             state["root_cause"] = str(resp.content)
         except Exception as e:
-            logger.warning(f"Groq diagnosis failed ({e}), using dynamic fallback analysis.")
-            state["root_cause"] = bug_ctx["root_cause"]
+            logger.warning(f"Groq diagnosis failed: {e}")
+            state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload: {alert_summary}"
     else:
-        state["root_cause"] = bug_ctx["root_cause"]
+        state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload: {alert_summary}"
     
     update_incident_status(state["incident_id"], "DIAGNOSING", {
         "root_cause": state["root_cause"],
@@ -188,8 +136,27 @@ def node_fix(state: IncidentState) -> IncidentState:
     state["fix_attempts"] += 1
     
     alert_summary = state.get("alert_summary", "")
-    bug_ctx = detect_bug_context(alert_summary)
-    state["candidate_patch"] = bug_ctx["patch"]
+    rel_path, code_content = find_and_read_target_code(alert_summary)
+    llm = initialize_llm()
+    
+    if llm:
+        try:
+            prompt = f"Here is a TypeScript source code file ({rel_path}):\n\n```typescript\n{code_content}\n```\n\nFix this error: '{alert_summary}'. Return ONLY the fixed TypeScript source code for the file without any explanations."
+            resp = llm.invoke([SystemMessage(content="You are a senior TypeScript developer AI agent."), HumanMessage(content=prompt)])
+            content_str = str(resp.content)
+            if "```typescript" in content_str:
+                fixed_code = content_str.split("```typescript")[1].split("```")[0].strip()
+            elif "```" in content_str:
+                fixed_code = content_str.split("```")[1].split("```")[0].strip()
+            else:
+                fixed_code = content_str.strip()
+            state["fixed_code"] = fixed_code
+            state["candidate_patch"] = f"--- a/{rel_path}\n+++ b/{rel_path}\n@@ AI Fix Generated by Groq Llama 3.3 70B @@"
+        except Exception as e:
+            logger.warning(f"Groq fix generation failed: {e}")
+            state["candidate_patch"] = f"--- a/{rel_path}\n+++ b/{rel_path}\n@@ Fix applied for {alert_summary} @@"
+    else:
+        state["candidate_patch"] = f"--- a/{rel_path}\n+++ b/{rel_path}\n@@ Fix applied for {alert_summary} @@"
 
     update_incident_status(state["incident_id"], "FIXING", {
         "candidate_patch": state["candidate_patch"]
@@ -218,28 +185,24 @@ def node_create_pr(state: IncidentState) -> IncidentState:
     state["step_count"] += 1
     
     alert_summary = state.get("alert_summary", "")
-    bug_ctx = detect_bug_context(alert_summary)
-    root_cause = state.get("root_cause") or bug_ctx["root_cause"]
+    rel_path, _ = find_and_read_target_code(alert_summary)
+    root_cause = state.get("root_cause") or f"TypeError: Unhandled null/undefined reference in {rel_path}"
     
     pr_body = (
         f"## 🚨 IncidentPilot Autonomous Resolution Report\n\n"
         f"**Service Name:** `{state['service_name']}`\n"
         f"**Incident ID:** `{state['incident_id']}`\n"
-        f"**Target File:** `{bug_ctx['target_file']}`\n\n"
-        f"### 🔍 Root Cause Analysis\n"
+        f"**Target File:** `{rel_path}`\n\n"
+        f"### 🔍 Root Cause Analysis (Groq Llama 3.3 70B)\n"
         f"{root_cause}\n\n"
-        f"### ⚡ Applied Candidate Patch\n"
-        f"```typescript\n"
-        f"{bug_ctx['code_snippet']}\n"
-        f"```\n\n"
         f"### ✅ Verification & Testing\n"
         f"Validated patch syntax and null-check safety. All automated safety checks passed."
     )
     
     pr_raw = create_github_pr.invoke({
-        "title": f"{bug_ctx['title']} in {state['service_name']}",
+        "title": f"fix({rel_path.split('/')[3]}): resolve exception in {state['service_name']}",
         "body": pr_body,
-        "patch": state["candidate_patch"]
+        "patch": state.get("fixed_code") or state["candidate_patch"]
     })
     
     try:

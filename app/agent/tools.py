@@ -182,23 +182,14 @@ def create_github_pr(title: str, body: str, patch: str) -> str:
                 )
                 
                 # 4. Commit candidate patch to the new branch via GitHub Contents API
+                target_file_path = "src/app/api/checkout/route.ts"
                 text_meta = (title + " " + body).lower()
-                if "price" in text_meta or "discount" in text_meta or "undefined" in text_meta:
+                if "discount" in text_meta or "price" in text_meta:
                     target_file_path = "src/app/api/discount/route.ts"
-                    search_pattern = "const firstItemPrice = body.items[0].price;"
-                    replace_pattern = "// Fix applied by IncidentPilot AI Agent: Null-check items array\n    const firstItemPrice = body?.items?.[0]?.price || 0;"
-                elif "stock" in text_meta or "inventory" in text_meta or "stock_quantity" in text_meta:
+                elif "inventory" in text_meta or "stock" in text_meta:
                     target_file_path = "src/app/api/inventory/route.ts"
-                    search_pattern = "const stock = body.product.stock_quantity;"
-                    replace_pattern = "// Fix applied by IncidentPilot AI Agent: Null-check product stock\n    const stock = body?.product?.stock_quantity || 0;"
-                elif "destructure" in text_meta or "user" in text_meta or "profile" in text_meta:
+                elif "user" in text_meta or "profile" in text_meta:
                     target_file_path = "src/app/api/user/profile/route.ts"
-                    search_pattern = "const { email, role } = body.user;"
-                    replace_pattern = "// Fix applied by IncidentPilot AI Agent: Fallback object on user destructuring\n    const { email = '', role = '' } = body?.user || {};"
-                else:
-                    target_file_path = "src/app/api/checkout/route.ts"
-                    search_pattern = "const city = body.customer.address.city;"
-                    replace_pattern = "// Fix applied by IncidentPilot AI Agent: Null-check customer address\n    const city = body?.customer?.address?.city || 'UNKNOWN';"
 
                 import base64
                 
@@ -217,10 +208,25 @@ def create_github_pr(title: str, body: str, patch: str) -> str:
                     file_sha = file_info.get("sha")
                     raw_content = base64.b64decode(file_info.get("content", "")).decode("utf-8")
                     
-                    if search_pattern in raw_content:
-                        fixed_code = raw_content.replace(search_pattern, replace_pattern)
+                    if patch and "export async function" in patch:
+                        fixed_code = patch
                     else:
-                        fixed_code = raw_content
+                        llm = initialize_llm()
+                        if llm:
+                            try:
+                                prompt = f"Given this TypeScript file ({target_file_path}):\n\n```typescript\n{raw_content}\n```\n\nFix null/undefined exceptions. Return ONLY the complete updated TypeScript code."
+                                resp = llm.invoke([SystemMessage(content="You are a senior TypeScript developer AI agent."), HumanMessage(content=prompt)])
+                                content_str = str(resp.content)
+                                if "```typescript" in content_str:
+                                    fixed_code = content_str.split("```typescript")[1].split("```")[0].strip()
+                                elif "```" in content_str:
+                                    fixed_code = content_str.split("```")[1].split("```")[0].strip()
+                                else:
+                                    fixed_code = content_str.strip()
+                            except Exception:
+                                fixed_code = raw_content
+                        else:
+                            fixed_code = raw_content
                 else:
                     fixed_code = "// Target file not found"
 

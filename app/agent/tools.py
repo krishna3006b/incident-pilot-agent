@@ -162,7 +162,7 @@ def get_llm():
     return None
 
 @tool
-def create_github_pr(title: str, body: str, patch: str = "") -> str:
+def create_github_pr(title: str, body: str, target_file: str = "", patch: str = "") -> str:
     """Create GitHub Pull Request on ordering-system repository with candidate fix."""
     try:
         github_token = os.getenv("GITHUB_TOKEN")
@@ -196,14 +196,15 @@ def create_github_pr(title: str, body: str, patch: str = "") -> str:
         if ref_resp.status_code != 201:
             return f"Error creating branch: {ref_resp.text}"
 
-        target_file_path = "src/app/api/checkout/route.ts"
+        target_file_path = target_file if target_file else "src/app/api/checkout/route.ts"
         text_meta = (title + " " + body).lower()
-        if "discount" in text_meta or "price" in text_meta:
-            target_file_path = "src/app/api/discount/route.ts"
-        elif "inventory" in text_meta or "stock" in text_meta:
-            target_file_path = "src/app/api/inventory/route.ts"
-        elif "user" in text_meta or "profile" in text_meta:
-            target_file_path = "src/app/api/user/profile/route.ts"
+        if not target_file:
+            if "discount" in text_meta or "price" in text_meta:
+                target_file_path = "src/app/api/discount/route.ts"
+            elif "inventory" in text_meta or "stock" in text_meta:
+                target_file_path = "src/app/api/inventory/route.ts"
+            elif "user" in text_meta or "profile" in text_meta:
+                target_file_path = "src/app/api/user/profile/route.ts"
 
         import base64
         

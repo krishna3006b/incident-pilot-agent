@@ -465,8 +465,9 @@ def node_create_pr(state: IncidentState) -> IncidentState:
     )
     
     pr_raw = create_github_pr.invoke({
-        "title": f"fix({rel_path.split('/')[3]}): resolve exception in {state['service_name']}",
+        "title": f"fix({rel_path.split('/')[-2]}): resolve exception in {state['service_name']}",
         "body": pr_body,
+        "target_file": rel_path,
         "patch": state.get("fixed_code") or ""
     })
     

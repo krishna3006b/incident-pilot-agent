@@ -360,14 +360,20 @@ def node_fix(state: IncidentState) -> IncidentState:
                 prompt = (
                     f"You are a senior Site Reliability & TypeScript Engineer AI agent.\n"
                     f"{packet.to_markdown()}\n\n"
-                    f"STRICT FIX GUIDELINES:\n"
-                    f"1. Fix ONLY the primary target file `{rel_path}`.\n"
-                    f"2. Modify all unsafe property dereferences (e.g. `taxInfo.amount`, `body.items[0].price`, `body.customer.address.city`) to use safe optional chaining and default fallbacks (e.g. `taxInfo?.amount?.toFixed(2) || '0.00'`).\n"
-                    f"3. Do NOT output unified diffs, git diff markers (`@@ -... @@`), or code from related modules.\n"
-                    f"4. Output ONLY the complete updated TypeScript code for `{rel_path}` inside a ```typescript ... ``` block without any prose or diff markers.\n"
+                    f"STRICT NEXT.JS APP ROUTER FIX GUIDELINES:\n"
+                    f"1. Target file `{rel_path}` is a NEXT.JS APP ROUTER API ROUTE (`src/app/api/.../route.ts`).\n"
+                    f"2. You MUST use Next.js App Router format:\n"
+                    f"   `import {{ NextResponse }} from 'next/server';`\n"
+                    f"   `export async function POST(req: Request) {{ ... }}`\n"
+                    f"   `const body = await req.json();`\n"
+                    f"   `return NextResponse.json({{ ... }});`\n"
+                    f"3. NEVER use Express.js syntax (`express`, `Router()`, `res.status()`, `res.send()`, `req.body`, `../types`). Express code will break Next.js builds!\n"
+                    f"4. Modify all unsafe property dereferences (e.g. `body.user.email`, `body.items[0].price`, `body.customer.address.city`) to use safe optional chaining and default fallbacks (e.g. `const {{ email, role }} = body.user || {{}};` or `const email = body.user?.email || null;`).\n"
+                    f"5. Do NOT output unified diffs or git diff markers (`@@ -... @@`).\n"
+                    f"6. Output ONLY the complete updated Next.js TypeScript code for `{rel_path}` inside a ```typescript ... ``` block without any prose.\n"
                     f"{human_feedback_instruction}"
                 )
-                resp = llm.invoke([SystemMessage(content="You are an elite TypeScript SRE AI agent."), HumanMessage(content=prompt)])
+                resp = llm.invoke([SystemMessage(content="You are an elite Next.js SRE AI agent."), HumanMessage(content=prompt)])
                 content_str = str(resp.content).strip()
                 if "```typescript" in content_str:
                     candidate = content_str.split("```typescript")[1].split("```")[0].strip()
@@ -384,13 +390,14 @@ def node_fix(state: IncidentState) -> IncidentState:
                 
                 has_export = "export" in candidate
                 has_safety = "?." in candidate or "if (" in candidate or "||" in candidate or "try" in candidate
+                has_no_express = "express" not in candidate.lower() and "router()" not in candidate.lower() and "nextresponse" in candidate.lower()
                 
-                if len(candidate) > 30 and has_export and has_safety:
+                if len(candidate) > 30 and has_export and has_safety and has_no_express:
                     fixed_code = candidate
                     logger.info(f"LLM fix generation succeeded on attempt {attempt}")
                     break
                 else:
-                    logger.warning(f"LLM attempt {attempt} produced invalid patch (length: {len(candidate)}). Retrying...")
+                    logger.warning(f"LLM attempt {attempt} produced invalid patch (Express syntax or missing NextResponse). Retrying...")
             except Exception as e:
                 logger.warning(f"Groq fix generation attempt {attempt} failed: {e}")
                 if "rate_limit" in str(e).lower() or "429" in str(e):

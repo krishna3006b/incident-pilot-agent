@@ -210,9 +210,9 @@ def find_and_read_target_code(alert_summary: str):
 
 # --- Sandbox Trigger ---
 def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, callback_url: str = "") -> bool:
-    """Trigger GitHub Actions sandbox-test.yml via repository_dispatch."""
+    """Trigger GitHub Actions sandbox-test.yml via repository_dispatch on agent repo."""
     github_token = os.getenv("GITHUB_TOKEN")
-    github_repo = os.getenv("GITHUB_REPO", "krishna3006b/incident-pilot-agent")
+    agent_repo = os.getenv("AGENT_REPO", "krishna3006b/incident-pilot-agent")
 
     if not github_token:
         logger.warning("No GITHUB_TOKEN set, skipping sandbox trigger.")
@@ -220,7 +220,7 @@ def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, ca
 
     try:
         resp = httpx.post(
-            f"https://api.github.com/repos/{github_repo}/dispatches",
+            f"https://api.github.com/repos/{agent_repo}/dispatches",
             headers={
                 "Authorization": f"Bearer {github_token}",
                 "Accept": "application/vnd.github.v3+json"
@@ -237,10 +237,10 @@ def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, ca
             timeout=10.0
         )
         if resp.status_code in (200, 204):
-            logger.info(f"Sandbox test triggered for incident {incident_id}")
+            logger.info(f"Sandbox test triggered on {agent_repo} for incident {incident_id}")
             return True
         else:
-            logger.warning(f"Sandbox trigger returned {resp.status_code}: {resp.text}")
+            logger.warning(f"Sandbox trigger for {agent_repo} returned {resp.status_code}: {resp.text}")
     except Exception as e:
         logger.warning(f"Sandbox trigger failed: {e}")
     return False

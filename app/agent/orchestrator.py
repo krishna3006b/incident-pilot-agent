@@ -79,6 +79,28 @@ def node_investigate(state: IncidentState) -> IncidentState:
     })
     return state
 
+def find_and_read_target_code(alert_summary: str):
+    text = alert_summary.lower()
+    rel_path = "src/app/api/checkout/route.ts"
+    if "discount" in text or "price" in text or "undefined" in text:
+        rel_path = "src/app/api/discount/route.ts"
+    elif "inventory" in text or "stock" in text or "stock_quantity" in text:
+        rel_path = "src/app/api/inventory/route.ts"
+    elif "user" in text or "profile" in text or "destructure" in text:
+        rel_path = "src/app/api/user/profile/route.ts"
+        
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    full_path = os.path.join(base_dir, "target_app", rel_path)
+    
+    if os.path.exists(full_path):
+        try:
+            with open(full_path, "r", encoding="utf-8") as f:
+                return rel_path, f.read()
+        except Exception:
+            pass
+            
+    return rel_path, "// File content"
+
 def detect_bug_context(alert_summary: str):
     text = alert_summary.lower()
     if "price" in text or "discount" in text or "undefined" in text:
@@ -139,10 +161,11 @@ def node_diagnose(state: IncidentState) -> IncidentState:
     llm = initialize_llm()
     alert_summary = state.get("alert_summary", "")
     bug_ctx = detect_bug_context(alert_summary)
+    rel_path, code_content = find_and_read_target_code(alert_summary)
     
     if llm:
         try:
-            prompt = f"Analyze this incident alert: '{alert_summary}'. Identify the root cause in TypeScript API route."
+            prompt = f"Analyze this production alert: '{alert_summary}'. Here is the target source code for {rel_path}:\n\n{code_content}\n\nIdentify the exact root cause in 2 concise sentences."
             resp = llm.invoke([SystemMessage(content="You are an expert site reliability AI agent."), HumanMessage(content=prompt)])
             state["root_cause"] = str(resp.content)
         except Exception as e:
@@ -158,13 +181,14 @@ def node_diagnose(state: IncidentState) -> IncidentState:
     return state
 
 def node_fix(state: IncidentState) -> IncidentState:
-    """Generate candidate code fix patch dynamically."""
+    """Generate candidate code fix patch dynamically using Groq LLM."""
     logger.info(f"State [FIXING] incident: {state['incident_id']} (Attempt {state['fix_attempts'] + 1})")
     state["status"] = "FIXING"
     state["step_count"] += 1
     state["fix_attempts"] += 1
     
-    bug_ctx = detect_bug_context(state.get("alert_summary", ""))
+    alert_summary = state.get("alert_summary", "")
+    bug_ctx = detect_bug_context(alert_summary)
     state["candidate_patch"] = bug_ctx["patch"]
 
     update_incident_status(state["incident_id"], "FIXING", {

@@ -184,9 +184,9 @@ def node_fix(state: IncidentState) -> IncidentState:
                 f"Fix the production error in `{rel_path}`: '{alert_summary}'\n\n"
                 f"Original Source Code:\n```typescript\n{code_content}\n```\n\n"
                 f"STRICT FIX GUIDELINES:\n"
-                f"1. Output FULL, VALID, COMPLETE TypeScript code for `{rel_path}`.\n"
-                f"2. Keep imports, POST export signature, try/catch block, and Slack alert error handler in catch.\n"
-                f"3. Use safe optional chaining or default fallback values (e.g. `const city = body?.customer?.address?.city || 'UNKNOWN';`) so property access never throws TypeError.\n"
+                f"1. Modify all direct property accesses (e.g. `body.items[0].price`, `body.customer.address.city`, `body.product.stock_quantity`, `{ email, role } = body.user`) to use safe optional chaining and fallback defaults (e.g. `body?.items?.[0]?.price || 0`, `body?.customer?.address?.city || 'UNKNOWN'`).\n"
+                f"2. Ensure the property access lines are updated so the output differs from the bug line.\n"
+                f"3. Keep imports, POST export signature, try/catch block, and Slack alert error handler in catch.\n"
                 f"4. Do NOT throw uncaught errors. Ensure the route safely returns NextResponse.json.\n"
                 f"5. Output ONLY valid code inside ```typescript ... ``` block without any introductory or concluding prose."
             )

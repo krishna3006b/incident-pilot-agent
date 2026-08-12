@@ -358,23 +358,93 @@ def node_diagnose(state: IncidentState) -> IncidentState:
     llm = initialize_llm()
     alert_summary = state.get("alert_summary", "")
     rel_path, code_content = find_and_read_target_code(alert_summary)
+    confidence = 0.0
     
     if llm and code_content != "// Target code file":
         try:
-            prompt = f"Analyze this production error alert: '{alert_summary}'. Here is the target source code for {rel_path}:\n\n```typescript\n{code_content}\n```\n\nIdentify the exact root cause in 2 concise sentences."
-            resp = llm.invoke([SystemMessage(content="You are an expert site reliability AI agent."), HumanMessage(content=prompt)])
-            state["root_cause"] = str(resp.content)
+            prompt = (
+                f"Analyze this production error alert: '{alert_summary}'.\n"
+                f"Here is the target source code for {rel_path}:\n\n"
+                f"```typescript\n{code_content}\n```\n\n"
+                f"Respond in EXACTLY this format (no extra text):\n"
+                f"ROOT_CAUSE: <2 concise sentences identifying the exact root cause>\n"
+                f"CONFIDENCE: <a decimal between 0.0 and 1.0 representing how confident you are in this diagnosis>"
+            )
+            resp = llm.invoke([SystemMessage(content="You are an expert site reliability AI agent. Always include a CONFIDENCE score."), HumanMessage(content=prompt)])
+            content = str(resp.content).strip()
+            
+            # Parse root cause
+            if "ROOT_CAUSE:" in content:
+                root_part = content.split("ROOT_CAUSE:")[1]
+                if "CONFIDENCE:" in root_part:
+                    state["root_cause"] = root_part.split("CONFIDENCE:")[0].strip()
+                else:
+                    state["root_cause"] = root_part.strip()
+            else:
+                state["root_cause"] = content
+            
+            # Parse LLM confidence
+            if "CONFIDENCE:" in content:
+                try:
+                    conf_str = content.split("CONFIDENCE:")[1].strip().split()[0].strip()
+                    confidence = float(conf_str)
+                    confidence = max(0.0, min(1.0, confidence))
+                except (ValueError, IndexError):
+                    confidence = 0.0
+                    
         except Exception as e:
             logger.warning(f"Groq diagnosis failed: {e}")
             state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload."
     else:
         state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload."
     
+    # Deterministic confidence calculation from evidence signals if LLM didn't provide one
+    if confidence < 0.1:
+        confidence = _calculate_evidence_confidence(alert_summary, rel_path, code_content, state.get("root_cause", ""))
+    
+    state["confidence"] = confidence
+    
     update_incident_status(state["incident_id"], "DIAGNOSING", {
         "root_cause": state["root_cause"],
-        "confidence": 0.96
+        "confidence": confidence
     })
     return state
+
+
+def _calculate_evidence_confidence(alert_summary: str, rel_path: str, code_content: str, root_cause: str) -> float:
+    """Calculate confidence score from evidence quality signals."""
+    score = 0.0
+    text = alert_summary.lower()
+    
+    # Signal 1: Stack trace present with file + line number (strong signal)
+    if "route.ts:" in text or ".ts:" in text or "at POST" in text:
+        score += 0.25
+    
+    # Signal 2: Known error pattern match (TypeError, Cannot read, Cannot destructure)
+    error_patterns = ["typeerror", "cannot read propert", "cannot destructure", "is not a function", "is null", "is undefined"]
+    if any(p in text for p in error_patterns):
+        score += 0.20
+    
+    # Signal 3: Target file successfully resolved (not default fallback)
+    if rel_path != "src/app/api/checkout/route.ts" or "checkout" in text:
+        score += 0.15
+    
+    # Signal 4: Source code contains the suspected bug pattern
+    bug_patterns = ["body.customer.", "body.items[0].", "body.product.", "body.user", "= body."]
+    if any(p in code_content for p in bug_patterns):
+        score += 0.20
+    
+    # Signal 5: Root cause is specific (not generic fallback)
+    if root_cause and len(root_cause) > 50 and "Unhandled null" not in root_cause:
+        score += 0.15
+    elif root_cause and "TypeError" in root_cause:
+        score += 0.10
+    
+    # Signal 6: Endpoint explicitly mentioned in alert
+    if "/api/" in text:
+        score += 0.05
+    
+    return round(min(1.0, max(0.1, score)), 2)
 
 def node_fix(state: IncidentState) -> IncidentState:
     """Generate candidate code fix patch dynamically using Groq LLM."""

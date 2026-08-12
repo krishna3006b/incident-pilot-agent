@@ -3,6 +3,7 @@ import time
 import httpx
 import logging
 import json
+import re
 from typing import Dict, Any, List, TypedDict, Optional
 try:
     from langchain_groq import ChatGroq
@@ -19,6 +20,8 @@ from app.agent.context_builder import packet_builder
 
 logger = logging.getLogger(__name__)
 
+
+# --- State Type ---
 class IncidentState(TypedDict):
     incident_id: str
     service_name: str
@@ -35,8 +38,48 @@ class IncidentState(TypedDict):
     step_count: int
     fix_attempts: int
     token_usage: int
+    tool_calls_used: int
+    evidence_ids: List[str]
     error: Optional[str]
 
+
+# --- Retrieval Budget Tracker ---
+class RetrievalBudget:
+    """Tracks tool call usage against budget limits."""
+    def __init__(self, max_tool_calls=20, max_read_file=10, max_search=5):
+        self.max_tool_calls = max_tool_calls
+        self.max_read_file = max_read_file
+        self.max_search = max_search
+        self.total_calls = 0
+        self.read_file_calls = 0
+        self.search_calls = 0
+
+    def can_call(self, call_type: str = "generic") -> bool:
+        if self.total_calls >= self.max_tool_calls:
+            return False
+        if call_type == "read_file" and self.read_file_calls >= self.max_read_file:
+            return False
+        if call_type == "search" and self.search_calls >= self.max_search:
+            return False
+        return True
+
+    def record_call(self, call_type: str = "generic"):
+        self.total_calls += 1
+        if call_type == "read_file":
+            self.read_file_calls += 1
+        elif call_type == "search":
+            self.search_calls += 1
+
+    def summary(self) -> Dict[str, int]:
+        return {
+            "total_calls": self.total_calls,
+            "max_tool_calls": self.max_tool_calls,
+            "read_file_calls": self.read_file_calls,
+            "search_calls": self.search_calls
+        }
+
+
+# --- Default Target Templates (fallback code for known routes) ---
 DEFAULT_TARGET_TEMPLATES = {
     "src/app/api/checkout/route.ts": """import { NextResponse } from 'next/server';
 
@@ -89,6 +132,7 @@ export async function POST(req: Request) {
 }"""
 }
 
+
 def initialize_llm(model_name: str = "llama-3.3-70b-versatile"):
     groq_key = settings.GROQ_API_KEY or os.getenv("GROQ_API_KEY")
     if groq_key and ChatGroq:
@@ -103,13 +147,12 @@ def initialize_llm(model_name: str = "llama-3.3-70b-versatile"):
             logger.warning(f"Groq LLM init failed for {model_name}: {e}.")
     return None
 
+
 def find_and_read_target_code(alert_summary: str):
-    import re
-    # Extract all file paths from alert summary / stack trace
+    """Extract target file from alert and fetch its code content."""
     matches = re.findall(r'(src/[\w/-]+\.ts)', alert_summary)
-    
+
     if matches:
-        # Primary target is the first file mentioned in stack trace
         rel_path = matches[0]
     else:
         text = alert_summary.lower()
@@ -125,10 +168,10 @@ def find_and_read_target_code(alert_summary: str):
             rel_path = "src/app/api/user/profile/route.ts"
         else:
             rel_path = "src/app/api/checkout/route.ts"
-            
+
     github_token = os.getenv("GITHUB_TOKEN")
     github_repo = os.getenv("GITHUB_REPO", "krishna3006b/ordering-system")
-    
+
     def fetch_file_content(path: str) -> str:
         if github_token and github_repo:
             try:
@@ -142,7 +185,7 @@ def find_and_read_target_code(alert_summary: str):
                     return base64.b64decode(resp.json().get("content", "")).decode("utf-8")
             except Exception as e:
                 logger.warning(f"Failed to fetch {path} from GitHub: {e}")
-                
+
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
         full_path = os.path.join(base_dir, "target_app", path)
         if os.path.exists(full_path):
@@ -154,18 +197,56 @@ def find_and_read_target_code(alert_summary: str):
         return DEFAULT_TARGET_TEMPLATES.get(path, "")
 
     primary_content = fetch_file_content(rel_path)
-    
-    # If multiple files were matched in stack trace (e.g. payment-processor.ts and route.ts), combine them for full context
+
     combined_content = f"// Primary Target File: {rel_path}\n{primary_content}"
     unique_paths = list(dict.fromkeys(matches))
     for extra_path in unique_paths[1:]:
         extra_code = fetch_file_content(extra_path)
         if extra_code:
             combined_content += f"\n\n// Related Module File: {extra_path}\n{extra_code}"
-            
+
     return rel_path, combined_content
 
-# State Machine Nodes
+
+# --- Sandbox Trigger ---
+def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, callback_url: str = "") -> bool:
+    """Trigger GitHub Actions sandbox-test.yml via repository_dispatch."""
+    github_token = os.getenv("GITHUB_TOKEN")
+    github_repo = os.getenv("GITHUB_REPO", "krishna3006b/incident-pilot-agent")
+
+    if not github_token:
+        logger.warning("No GITHUB_TOKEN set, skipping sandbox trigger.")
+        return False
+
+    try:
+        resp = httpx.post(
+            f"https://api.github.com/repos/{github_repo}/dispatches",
+            headers={
+                "Authorization": f"Bearer {github_token}",
+                "Accept": "application/vnd.github.v3+json"
+            },
+            json={
+                "event_type": "validate_patch",
+                "client_payload": {
+                    "incident_id": incident_id,
+                    "target_file": target_file,
+                    "patch_code": patch_code[:5000],
+                    "callback_url": callback_url
+                }
+            },
+            timeout=10.0
+        )
+        if resp.status_code in (200, 204):
+            logger.info(f"Sandbox test triggered for incident {incident_id}")
+            return True
+        else:
+            logger.warning(f"Sandbox trigger returned {resp.status_code}: {resp.text}")
+    except Exception as e:
+        logger.warning(f"Sandbox trigger failed: {e}")
+    return False
+
+
+# --- State Machine Nodes ---
 def node_validate(state: IncidentState) -> IncidentState:
     """Validate incoming incident alert."""
     logger.info(f"State [VALIDATING] incident: {state['incident_id']}")
@@ -174,77 +255,113 @@ def node_validate(state: IncidentState) -> IncidentState:
     update_incident_status(state["incident_id"], "VALIDATING")
     return state
 
+
 def node_investigate(state: IncidentState) -> IncidentState:
-    """Investigate logs, traces, and metrics."""
+    """Investigate logs, traces, and metrics with budget tracking."""
     logger.info(f"State [INVESTIGATING] incident: {state['incident_id']}")
     state["status"] = "INVESTIGATING"
     state["step_count"] += 1
-    
-    # Dynamically search workspace for affected code
+
+    budget = RetrievalBudget()
+
+    # Search workspace for affected code
     search_query = state.get("alert_summary", "")
-    code_results = search_code.invoke({"repository": state["service_name"], "query": search_query})
-    
+    if budget.can_call("search"):
+        code_results = search_code.invoke({"repository": state["service_name"], "query": search_query})
+        budget.record_call("search")
+    else:
+        code_results = ""
+
     # Read target code file
-    target_file = "target_app/src/app/api/checkout/route.ts"
-    file_content = read_file.invoke({"repository": state["service_name"], "filepath": target_file})
-    
-    # Analyze distributed trace waterfall
-    trace_data = get_distributed_trace.invoke({"trace_id": "tr_8f99a012b"})
-    
+    if budget.can_call("read_file"):
+        target_file = "target_app/src/app/api/checkout/route.ts"
+        file_content = read_file.invoke({"repository": state["service_name"], "filepath": target_file})
+        budget.record_call("read_file")
+    else:
+        file_content = ""
+
+    # Analyze distributed trace
+    if budget.can_call("generic"):
+        trace_data = get_distributed_trace.invoke({"trace_id": "tr_8f99a012b"})
+        budget.record_call("generic")
+    else:
+        trace_data = ""
+
     state["logs"] = code_results
     state["trace"] = trace_data
-    
-    # Only update columns that exist in Supabase schema
+    state["tool_calls_used"] += budget.total_calls
+
     update_incident_status(state["incident_id"], "INVESTIGATING")
+    logger.info(f"Investigation budget: {budget.summary()}")
     return state
 
+
 def node_diagnose(state: IncidentState) -> IncidentState:
-    """Perform root cause analysis using evidence and Groq LLM."""
+    """Perform root cause analysis with structured JSON output and evidence IDs."""
     logger.info(f"State [DIAGNOSING] incident: {state['incident_id']}")
     state["status"] = "DIAGNOSING"
     state["step_count"] += 1
-    
+
     llm = initialize_llm()
     alert_summary = state.get("alert_summary", "")
     rel_path, code_content = find_and_read_target_code(alert_summary)
     confidence = 0.0
-    
+
+    # Build structured Context Packet
+    packet = packet_builder.assemble_packet(
+        incident_id=state["incident_id"],
+        service_name=state["service_name"],
+        alert_text=alert_summary
+    )
+
+    # Collect evidence IDs for traceability
+    state["evidence_ids"] = [e.id for e in packet.all_evidence]
+
     if llm and code_content != "// Target code file":
+        prompt = (
+            f"{packet.to_markdown()}\n\n"
+            f"Respond in EXACTLY this JSON format (no extra text, no markdown fences):\n"
+            f'{{"root_cause": "<2 concise sentences identifying the exact root cause>", '
+            f'"confidence": <decimal 0.0-1.0>, '
+            f'"evidence": {json.dumps(state["evidence_ids"][:3])}}}'
+        )
         try:
-            # Build structured Context Packet for diagnosis
-            packet = packet_builder.assemble_packet(
-                incident_id=state["incident_id"],
-                service_name=state["service_name"],
-                alert_text=alert_summary
-            )
-            prompt = (
-                f"{packet.to_markdown()}\n\n"
-                f"Respond in EXACTLY this format (no extra text):\n"
-                f"ROOT_CAUSE: <2 concise sentences identifying the exact root cause>\n"
-                f"CONFIDENCE: <a decimal between 0.0 and 1.0 representing how confident you are in this diagnosis>"
-            )
-            resp = llm.invoke([SystemMessage(content="You are an expert site reliability AI agent. Always include a CONFIDENCE score."), HumanMessage(content=prompt)])
+            resp = llm.invoke([
+                SystemMessage(content="You are an expert SRE AI agent. Respond ONLY with valid JSON."),
+                HumanMessage(content=prompt)
+            ])
             content = str(resp.content).strip()
-            
-            # Parse root cause
-            if "ROOT_CAUSE:" in content:
-                root_part = content.split("ROOT_CAUSE:")[1]
-                if "CONFIDENCE:" in root_part:
-                    state["root_cause"] = root_part.split("CONFIDENCE:")[0].strip()
+
+            # Try to parse structured JSON response
+            try:
+                # Strip markdown fences if present
+                if content.startswith('```'):
+                    content = content.split('```')[1]
+                    if content.startswith('json'):
+                        content = content[4:]
+                    content = content.strip()
+
+                result = json.loads(content)
+                state["root_cause"] = result.get("root_cause", content)
+                confidence = float(result.get("confidence", 0.0))
+                confidence = max(0.0, min(1.0, confidence))
+                logger.info(f"Structured diagnosis parsed: confidence={confidence}, evidence={result.get('evidence', [])}")
+            except (json.JSONDecodeError, ValueError):
+                # Fallback: parse old-style text format
+                if "ROOT_CAUSE:" in content:
+                    root_part = content.split("ROOT_CAUSE:")[1]
+                    state["root_cause"] = root_part.split("CONFIDENCE:")[0].strip() if "CONFIDENCE:" in root_part else root_part.strip()
                 else:
-                    state["root_cause"] = root_part.strip()
-            else:
-                state["root_cause"] = content
-            
-            # Parse LLM confidence
-            if "CONFIDENCE:" in content:
-                try:
-                    conf_str = content.split("CONFIDENCE:")[1].strip().split()[0].strip()
-                    confidence = float(conf_str)
-                    confidence = max(0.0, min(1.0, confidence))
-                except (ValueError, IndexError):
-                    confidence = 0.0
-                    
+                    state["root_cause"] = content
+
+                if "CONFIDENCE:" in content:
+                    try:
+                        conf_str = content.split("CONFIDENCE:")[1].strip().split()[0].strip()
+                        confidence = float(conf_str)
+                        confidence = max(0.0, min(1.0, confidence))
+                    except (ValueError, IndexError):
+                        pass
+
         except Exception as e:
             logger.warning(f"Groq diagnosis failed with primary model: {e}")
             if "rate_limit" in str(e).lower() or "429" in str(e):
@@ -252,7 +369,10 @@ def node_diagnose(state: IncidentState) -> IncidentState:
                     logger.info("Attempting diagnosis fallback with `llama-3.1-8b-instant`...")
                     fallback_llm = initialize_llm(model_name="llama-3.1-8b-instant")
                     if fallback_llm:
-                        resp = fallback_llm.invoke([SystemMessage(content="You are an expert site reliability AI agent. Always include a CONFIDENCE score."), HumanMessage(content=prompt)])
+                        resp = fallback_llm.invoke([
+                            SystemMessage(content="You are an expert SRE AI agent. Always include a CONFIDENCE score."),
+                            HumanMessage(content=prompt)
+                        ])
                         content = str(resp.content).strip()
                         if "ROOT_CAUSE:" in content:
                             root_part = content.split("ROOT_CAUSE:")[1]
@@ -271,13 +391,13 @@ def node_diagnose(state: IncidentState) -> IncidentState:
                 state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload."
     else:
         state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload."
-    
-    # Deterministic confidence calculation from evidence signals if LLM didn't provide one
+
+    # Deterministic confidence if LLM didn't provide one
     if confidence < 0.1:
         confidence = _calculate_evidence_confidence(alert_summary, rel_path, code_content, state.get("root_cause", ""))
-    
+
     state["confidence"] = confidence
-    
+
     update_incident_status(state["incident_id"], "DIAGNOSING", {
         "root_cause": state["root_cause"],
         "confidence": confidence
@@ -289,39 +409,42 @@ def _calculate_evidence_confidence(alert_summary: str, rel_path: str, code_conte
     """Calculate confidence score from evidence quality signals."""
     score = 0.0
     text = alert_summary.lower()
-    
-    # Signal 1: Stack trace present with file + line number (strong signal)
+
+    # Signal 1: Stack trace present with file + line number
     if "route.ts:" in text or ".ts:" in text or "at POST" in text:
         score += 0.25
-    
-    # Signal 2: Known error pattern match (TypeError, Cannot read, Cannot destructure)
+
+    # Signal 2: Known error pattern match
     error_patterns = ["typeerror", "cannot read propert", "cannot destructure", "is not a function", "is null", "is undefined"]
     if any(p in text for p in error_patterns):
         score += 0.20
-    
-    # Signal 3: Target file successfully resolved (not default fallback)
+
+    # Signal 3: Target file successfully resolved
     if rel_path != "src/app/api/checkout/route.ts" or "checkout" in text:
         score += 0.15
-    
-    # Signal 4: Source code contains the suspected bug pattern
+
+    # Signal 4: Source code contains suspected bug pattern
     bug_patterns = ["body.customer.", "body.items[0].", "body.product.", "body.user", "= body."]
     if any(p in code_content for p in bug_patterns):
         score += 0.20
-    
-    # Signal 5: Root cause is specific (not generic fallback)
+
+    # Signal 5: Root cause is specific
     if root_cause and len(root_cause) > 50 and "Unhandled null" not in root_cause:
         score += 0.15
     elif root_cause and "TypeError" in root_cause:
         score += 0.10
-    
+
     # Signal 6: Endpoint explicitly mentioned in alert
     if "/api/" in text:
         score += 0.05
-    
+
+    return min(score, 1.0)
+
+
 def _detect_language_and_framework(rel_path: str, code_content: str) -> Dict[str, str]:
-    """Dynamically inspect target file extension and code structure to determine language and framework guidelines."""
+    """Dynamically inspect target file to determine language and framework guidelines."""
     ext = rel_path.split(".")[-1].lower() if "." in rel_path else ""
-    
+
     if ext == "java":
         return {
             "language": "Java",
@@ -398,23 +521,23 @@ def _detect_language_and_framework(rel_path: str, code_content: str) -> Dict[str
             )
         }
 
+
 def node_fix(state: IncidentState) -> IncidentState:
-    """Generate candidate code fix patch dynamically using Groq LLM with retries."""
+    """Generate candidate code fix patch with retrieval budget and evidence tracing."""
     state["status"] = "FIXING"
     state["step_count"] += 1
     state["fix_attempts"] += 1
-    
+
     alert_summary = state.get("alert_summary", "")
     rel_path, code_content = find_and_read_target_code(alert_summary)
     llm = initialize_llm()
     fixed_code = ""
-    
+
     if llm and code_content and code_content != "// Target code file":
         for attempt in range(1, 4):
             try:
                 logger.info(f"LLM fix generation attempt {attempt}/3 for {rel_path}")
                 # Inject Verified Human Feedback (Incident Resolution Memory)
-                import os, json
                 kb_path = "knowledge_base.json"
                 kb_feedback = ""
                 if os.path.exists(kb_path):
@@ -426,8 +549,8 @@ def node_fix(state: IncidentState) -> IncidentState:
                                 kb_feedback = "\n".join([f"- {fb}" for fb in feedbacks])
                     except Exception:
                         pass
-                        
-                human_feedback_instruction = f"5. CRITICAL TEAM FEEDBACK (Incident Resolution Memory): Ensure your fix follows this past PR review feedback:\n{kb_feedback}\n" if kb_feedback else ""
+
+                human_feedback_instruction = f"6. CRITICAL TEAM FEEDBACK (Incident Resolution Memory): Ensure your fix follows this past PR review feedback:\n{kb_feedback}\n" if kb_feedback else ""
 
                 packet = packet_builder.assemble_packet(
                     incident_id=state["incident_id"],
@@ -436,6 +559,8 @@ def node_fix(state: IncidentState) -> IncidentState:
                 )
 
                 meta = _detect_language_and_framework(rel_path, code_content)
+                evidence_id_list = [e.id for e in packet.all_evidence[:3]]
+
                 prompt = (
                     f"You are a senior Site Reliability & {meta['language']} Engineer AI agent.\n"
                     f"{packet.to_markdown()}\n\n"
@@ -443,10 +568,11 @@ def node_fix(state: IncidentState) -> IncidentState:
                     f"{meta['rules']}\n"
                     f"5. Do NOT output unified diffs or git diff markers (`@@ -... @@`).\n"
                     f"{human_feedback_instruction}"
+                    f"\nEvidence IDs used: {json.dumps(evidence_id_list)}"
                 )
                 resp = llm.invoke([SystemMessage(content=f"You are an elite {meta['framework']} SRE AI agent."), HumanMessage(content=prompt)])
                 content_str = str(resp.content).strip()
-                
+
                 lang_tag = f"```{meta['code_block_lang']}"
                 if lang_tag in content_str:
                     candidate = content_str.split(lang_tag)[1].split("```")[0].strip()
@@ -454,13 +580,12 @@ def node_fix(state: IncidentState) -> IncidentState:
                     candidate = content_str.split("```")[1].split("```")[0].strip()
                 else:
                     candidate = content_str.strip()
-                    
-                # Post-processing Sanitizer: Strip any appended related modules or diff markers
+
+                # Post-processing: strip appended modules or diff markers
                 if "// Related Module File:" in candidate:
                     candidate = candidate.split("// Related Module File:")[0].strip()
-                import re
                 candidate = re.sub(r'@@\s*-\d+,\d+\s+\+\d+,\d+\s*@@', '', candidate).strip()
-                
+
                 # Framework-aware validation
                 has_safety = "?." in candidate or "if (" in candidate or "if " in candidate or "||" in candidate or "try" in candidate or "Optional" in candidate
                 if meta["framework"] == "Next.js App Router":
@@ -473,7 +598,7 @@ def node_fix(state: IncidentState) -> IncidentState:
                     is_valid_framework = "def " in candidate or "class " in candidate
                 else:
                     is_valid_framework = True
-                
+
                 if len(candidate) > 30 and has_safety and is_valid_framework:
                     fixed_code = candidate
                     logger.info(f"LLM fix generation succeeded on attempt {attempt} for {meta['language']}")
@@ -500,12 +625,13 @@ def node_fix(state: IncidentState) -> IncidentState:
     })
     return state
 
+
 def node_test(state: IncidentState) -> IncidentState:
-    """Validate candidate patch using real TypeScript syntax checks."""
+    """Validate candidate patch using static checks + optional sandbox trigger."""
     logger.info(f"State [TESTING] incident: {state['incident_id']}")
     state["status"] = "TESTING"
     state["step_count"] += 1
-    
+
     patch_code = state.get("fixed_code") or state.get("candidate_patch", "")
     if not patch_code or "NO_AUTOMATED_FIX" in patch_code:
         state["test_results"] = "FAIL: AI model was unable to generate a valid fix patch. Human engineering review required."
@@ -514,8 +640,8 @@ def node_test(state: IncidentState) -> IncidentState:
         return state
 
     validation_errors = []
-    
-    # Real Validation 1: Check for required TypeScript structural elements
+
+    # Validation 1: Required structural elements
     required_patterns = {
         "import statement": "import",
         "export declaration": "export",
@@ -523,8 +649,8 @@ def node_test(state: IncidentState) -> IncidentState:
     for check_name, pattern in required_patterns.items():
         if pattern not in patch_code:
             validation_errors.append(f"FAIL: Missing {check_name}")
-    
-    # Real Validation 2: Check that unsafe direct property accesses are gone
+
+    # Validation 2: Unsafe property accesses gone
     unsafe_patterns = [
         "body.customer.address",
         "body.items[0].price",
@@ -534,25 +660,25 @@ def node_test(state: IncidentState) -> IncidentState:
     for unsafe in unsafe_patterns:
         if unsafe in patch_code:
             validation_errors.append(f"FAIL: Unsafe property access still present: '{unsafe}'")
-            
+
     if "= body.user;" in patch_code and "?." not in patch_code and "||" not in patch_code:
         validation_errors.append("FAIL: Unsafe property access still present: '= body.user;'")
-    
-    # Real Validation 3: Check that safe optional chaining IS present
+
+    # Validation 3: Safe optional chaining present
     if "?." not in patch_code and "||" not in patch_code and "if (" not in patch_code:
         validation_errors.append("FAIL: No null safety check found in patch")
-    
-    # Real Validation 4: Balanced braces check
+
+    # Validation 4: Balanced braces
     open_braces = patch_code.count("{")
     close_braces = patch_code.count("}")
     if open_braces != close_braces:
         validation_errors.append(f"FAIL: Unbalanced braces (open={open_braces}, close={close_braces})")
-    
-    # Real Validation 5: Check code length is reasonable (not truncated/placeholder)
+
+    # Validation 5: Code length
     if len(patch_code) < 100:
         validation_errors.append(f"FAIL: Patch too short ({len(patch_code)} chars), likely a placeholder")
-    
-    # Real Validation 6: LLM-based syntax verification if available
+
+    # Validation 6: LLM syntax verification
     llm = initialize_llm()
     if llm and len(validation_errors) == 0:
         try:
@@ -569,7 +695,23 @@ def node_test(state: IncidentState) -> IncidentState:
                 logger.info("LLM TypeScript syntax verification: PASS")
         except Exception as e:
             logger.warning(f"LLM syntax verification skipped: {e}")
-    
+
+    # Trigger GitHub Actions sandbox test (non-blocking)
+    if len(validation_errors) == 0:
+        alert_summary = state.get("alert_summary", "")
+        rel_path, _ = find_and_read_target_code(alert_summary)
+        callback_url = os.getenv("RAILWAY_PUBLIC_URL", "")
+        if callback_url:
+            callback_url = f"{callback_url}/api/v1/webhooks/sandbox-result"
+        sandbox_triggered = trigger_sandbox_test(
+            incident_id=state["incident_id"],
+            target_file=rel_path,
+            patch_code=patch_code,
+            callback_url=callback_url
+        )
+        if sandbox_triggered:
+            logger.info(f"GitHub Actions sandbox test triggered for incident {state['incident_id']}")
+
     if validation_errors:
         state["test_results"] = "VALIDATION FAILED:\n" + "\n".join(validation_errors)
         logger.warning(f"Patch validation FAILED for incident {state['incident_id']}: {validation_errors}")
@@ -581,15 +723,17 @@ def node_test(state: IncidentState) -> IncidentState:
             f"Brace balance: VERIFIED ({open_braces} pairs).\n"
             f"Code length: {len(patch_code)} chars (healthy).\n"
             f"LLM syntax check: {'PASSED' if llm else 'SKIPPED (no LLM)'}.\n"
+            f"Evidence trail: {json.dumps(state.get('evidence_ids', [])[:3])}\n"
             f"Verdict: PATCH SAFE TO DEPLOY."
         )
         logger.info(f"Patch validation PASSED for incident {state['incident_id']}")
-    
+
     update_incident_status(state["incident_id"], "TESTING")
     return state
 
+
 def node_failed(state: IncidentState) -> IncidentState:
-    """Handle incident resolution failure cleanly when AI fix cannot be computed or verified."""
+    """Handle incident resolution failure."""
     logger.info(f"State [FAILED] incident: {state['incident_id']}")
     state["status"] = "FAILED"
     state["step_count"] += 1
@@ -598,51 +742,60 @@ def node_failed(state: IncidentState) -> IncidentState:
     })
     return state
 
+
 def node_create_pr(state: IncidentState) -> IncidentState:
-    """Create GitHub PR and request human review."""
+    """Create GitHub PR with evidence trail and request human review."""
     logger.info(f"State [PR_READY] incident: {state['incident_id']}")
     state["status"] = "PR_READY"
     state["step_count"] += 1
-    
+
     alert_summary = state.get("alert_summary", "")
     rel_path, _ = find_and_read_target_code(alert_summary)
     root_cause = state.get("root_cause") or f"TypeError: Unhandled null/undefined reference in {rel_path}"
-    
+
     code_preview = ""
     if state.get("fixed_code"):
         code_preview = f"### ⚡ Applied AI Fix (`{rel_path}`)\n```typescript\n{state['fixed_code']}\n```\n\n"
+
+    evidence_trail = ""
+    if state.get("evidence_ids"):
+        evidence_trail = "### 📍 Evidence Trail\n" + "\n".join([f"- `{eid}`" for eid in state["evidence_ids"][:5]]) + "\n\n"
 
     pr_body = (
         f"## 🚨 IncidentPilot Autonomous Resolution Report\n\n"
         f"**Service Name:** `{state['service_name']}`\n"
         f"**Incident ID:** `{state['incident_id']}`\n"
-        f"**Target File:** `{rel_path}`\n\n"
+        f"**Target File:** `{rel_path}`\n"
+        f"**Confidence:** `{state.get('confidence', 0.0):.0%}`\n\n"
         f"### 🔍 Root Cause Analysis (Groq Llama 3.3 70B)\n"
         f"{root_cause}\n\n"
+        f"{evidence_trail}"
         f"{code_preview}"
         f"### ✅ Verification & Testing\n"
-        f"Validated patch syntax and null-check safety. All automated safety checks passed."
+        f"Validated patch syntax and null-check safety. All automated safety checks passed.\n"
+        f"Tool calls used: {state.get('tool_calls_used', 0)}\n"
     )
-    
+
     pr_raw = create_github_pr.invoke({
         "title": f"fix({rel_path.split('/')[-2]}): resolve exception in {state['service_name']}",
         "body": pr_body,
         "target_file": rel_path,
         "patch": state.get("fixed_code") or ""
     })
-    
+
     try:
         pr_json = json.loads(pr_raw)
         state["pr_url"] = pr_json.get("pr_url", "https://github.com/krishna3006b/ordering-system/pulls")
     except Exception:
         state["pr_url"] = "https://github.com/krishna3006b/ordering-system/pulls"
-    
+
     update_incident_status(state["incident_id"], "PR_READY", {
         "pr_url": state["pr_url"]
     })
     return state
 
-# Conditional Router
+
+# --- Conditional Router ---
 def route_after_test(state: IncidentState) -> str:
     test_res = state.get("test_results", "").lower()
     if "fail" in test_res or "error" in test_res:
@@ -651,6 +804,8 @@ def route_after_test(state: IncidentState) -> str:
         return "failed"
     return "create_pr"
 
+
+# --- Build State Graph ---
 if StateGraph is not None:
     workflow = StateGraph(IncidentState)
     workflow.add_node("validate", node_validate)
@@ -678,6 +833,7 @@ if StateGraph is not None:
 else:
     orchestrator_graph = None
 
+
 def run_incident_orchestrator(incident_id: str, service_name: str, summary: str) -> IncidentState:
     """Execute the full agentic incident resolution pipeline."""
     initial_state: IncidentState = {
@@ -694,12 +850,14 @@ def run_incident_orchestrator(incident_id: str, service_name: str, summary: str)
         "step_count": 0,
         "fix_attempts": 0,
         "token_usage": 0,
+        "tool_calls_used": 0,
+        "evidence_ids": [],
         "error": None
     }
-    
+
     if orchestrator_graph:
         return orchestrator_graph.invoke(initial_state)
-    
+
     # Fallback execution sequence
     state = node_validate(initial_state)
     state = node_investigate(state)

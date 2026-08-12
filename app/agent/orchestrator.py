@@ -1,4 +1,5 @@
 import os
+import time
 import httpx
 import logging
 import json
@@ -88,18 +89,18 @@ export async function POST(req: Request) {
 }"""
 }
 
-def initialize_llm():
+def initialize_llm(model_name: str = "llama-3.3-70b-versatile"):
     groq_key = settings.GROQ_API_KEY or os.getenv("GROQ_API_KEY")
     if groq_key and ChatGroq:
         try:
             return ChatGroq(
                 groq_api_key=groq_key,
-                model_name="llama-3.3-70b-versatile",
+                model_name=model_name,
                 temperature=0.1,
                 max_tokens=2048
             )
         except Exception as e:
-            logger.warning(f"Groq LLM init failed: {e}. Using deterministic fallback engine.")
+            logger.warning(f"Groq LLM init failed for {model_name}: {e}.")
     return None
 
 def find_and_read_target_code(alert_summary: str):
@@ -245,8 +246,29 @@ def node_diagnose(state: IncidentState) -> IncidentState:
                     confidence = 0.0
                     
         except Exception as e:
-            logger.warning(f"Groq diagnosis failed: {e}")
-            state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload."
+            logger.warning(f"Groq diagnosis failed with primary model: {e}")
+            if "rate_limit" in str(e).lower() or "429" in str(e):
+                try:
+                    logger.info("Attempting diagnosis fallback with `llama-3.1-8b-instant`...")
+                    fallback_llm = initialize_llm(model_name="llama-3.1-8b-instant")
+                    if fallback_llm:
+                        resp = fallback_llm.invoke([SystemMessage(content="You are an expert site reliability AI agent. Always include a CONFIDENCE score."), HumanMessage(content=prompt)])
+                        content = str(resp.content).strip()
+                        if "ROOT_CAUSE:" in content:
+                            root_part = content.split("ROOT_CAUSE:")[1]
+                            state["root_cause"] = root_part.split("CONFIDENCE:")[0].strip() if "CONFIDENCE:" in root_part else root_part.strip()
+                        else:
+                            state["root_cause"] = content
+                        if "CONFIDENCE:" in content:
+                            try:
+                                confidence = float(content.split("CONFIDENCE:")[1].strip().split()[0].strip())
+                            except Exception:
+                                pass
+                except Exception as fallback_err:
+                    logger.warning(f"Fallback diagnosis failed: {fallback_err}")
+                    state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload."
+            else:
+                state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload."
     else:
         state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload."
     
@@ -371,6 +393,9 @@ def node_fix(state: IncidentState) -> IncidentState:
                     logger.warning(f"LLM attempt {attempt} produced invalid patch (length: {len(candidate)}). Retrying...")
             except Exception as e:
                 logger.warning(f"Groq fix generation attempt {attempt} failed: {e}")
+                if "rate_limit" in str(e).lower() or "429" in str(e):
+                    logger.warning("Rate limit hit on primary model. Switching to fallback model `llama-3.1-8b-instant`...")
+                    llm = initialize_llm(model_name="llama-3.1-8b-instant")
                 time.sleep(1)
 
     if not fixed_code:

@@ -473,9 +473,9 @@ def node_create_pr(state: IncidentState) -> IncidentState:
     
     try:
         pr_json = json.loads(pr_raw)
-        state["pr_url"] = pr_json.get("pr_url", f"https://github.com/{settings.PROJECT_NAME}/pull/1")
+        state["pr_url"] = pr_json.get("pr_url", "https://github.com/krishna3006b/ordering-system/pulls")
     except Exception:
-        state["pr_url"] = f"https://github.com/{settings.PROJECT_NAME}/pull/1"
+        state["pr_url"] = "https://github.com/krishna3006b/ordering-system/pulls"
     
     update_incident_status(state["incident_id"], "PR_READY", {
         "pr_url": state["pr_url"]

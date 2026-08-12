@@ -124,7 +124,19 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
         return {"challenge": body["challenge"]}
 
     event_data = body.get("event", {}) if isinstance(body.get("event"), dict) else {}
-    text = event_data.get("text") or body.get("text") or "Production HTTP 500 error in checkout API"
+    
+    # Ignore Slack system events (bot_add, channel_join, etc.)
+    subtype = event_data.get("subtype")
+    if subtype in ["bot_add", "channel_join", "channel_leave", "group_join"]:
+        logger.info(f"Ignoring Slack system event: {subtype}")
+        return {"status": "IGNORED", "reason": f"System event {subtype}"}
+
+    text = event_data.get("text") or body.get("text") or ""
+    
+    # Ignore non-incident messages (e.g., invites, integrations added)
+    if not text or "invite" in text.lower() or "added an integration" in text.lower():
+        logger.info(f"Ignoring non-alert Slack message: {text}")
+        return {"status": "IGNORED", "reason": "Non-incident message"}
     
     service_name = "payment-service"
     if "order" in text.lower():

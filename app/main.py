@@ -144,10 +144,13 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
     elif "auth" in text.lower():
         service_name = "auth-service"
 
+    from datetime import datetime, timezone
     incident_id = str(uuid.uuid4())
+    inc_num = 186 + len(get_incidents())
+    
     incident_record = {
         "id": incident_id,
-        "incident_number": 186,
+        "incident_number": inc_num,
         "title": text[:80],
         "service_name": service_name,
         "severity": "P1",
@@ -157,7 +160,7 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
         "root_cause": "",
         "candidate_patch": "",
         "pr_url": "",
-        "created_at": "2026-08-12T00:10:00Z"
+        "created_at": datetime.now(timezone.utc).isoformat()
     }
 
     create_incident(incident_record)

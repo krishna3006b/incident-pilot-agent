@@ -14,6 +14,7 @@ except ImportError:
 from app.core.config import settings
 from app.agent.tools import ALL_AGENT_TOOLS, get_logs, get_distributed_trace, search_code, read_file, run_tests_in_sandbox, create_github_pr
 from app.db.supabase import update_incident_status
+from app.agent.context_builder import packet_builder
 
 logger = logging.getLogger(__name__)
 
@@ -209,10 +210,14 @@ def node_diagnose(state: IncidentState) -> IncidentState:
     
     if llm and code_content != "// Target code file":
         try:
+            # Build structured Context Packet for diagnosis
+            packet = packet_builder.assemble_packet(
+                incident_id=state["incident_id"],
+                service_name=state["service_name"],
+                alert_text=alert_summary
+            )
             prompt = (
-                f"Analyze this production error alert: '{alert_summary}'.\n"
-                f"Here is the target source code for {rel_path}:\n\n"
-                f"```typescript\n{code_content}\n```\n\n"
+                f"{packet.to_markdown()}\n\n"
                 f"Respond in EXACTLY this format (no extra text):\n"
                 f"ROOT_CAUSE: <2 concise sentences identifying the exact root cause>\n"
                 f"CONFIDENCE: <a decimal between 0.0 and 1.0 representing how confident you are in this diagnosis>"
@@ -308,7 +313,7 @@ def node_fix(state: IncidentState) -> IncidentState:
         for attempt in range(1, 4):
             try:
                 logger.info(f"LLM fix generation attempt {attempt}/3 for {rel_path}")
-                # Inject RLHF Knowledge Base Feedback
+                # Inject Verified Human Feedback (Incident Resolution Memory)
                 import os, json
                 kb_path = "knowledge_base.json"
                 kb_feedback = ""
@@ -322,18 +327,23 @@ def node_fix(state: IncidentState) -> IncidentState:
                     except Exception:
                         pass
                         
-                rlhf_instruction = f"5. CRITICAL TEAM FEEDBACK (RLHF): Ensure your fix follows this past PR review feedback:\n{kb_feedback}\n" if kb_feedback else ""
+                human_feedback_instruction = f"5. CRITICAL TEAM FEEDBACK (Incident Resolution Memory): Ensure your fix follows this past PR review feedback:\n{kb_feedback}\n" if kb_feedback else ""
+
+                packet = packet_builder.assemble_packet(
+                    incident_id=state["incident_id"],
+                    service_name=state["service_name"],
+                    alert_text=alert_summary
+                )
 
                 prompt = (
                     f"You are a senior Site Reliability & TypeScript Engineer AI agent.\n"
-                    f"Fix the production error in `{rel_path}`: '{alert_summary}'\n\n"
-                    f"Source Code & Workspace Context:\n```typescript\n{code_content}\n```\n\n"
+                    f"{packet.to_markdown()}\n\n"
                     f"STRICT FIX GUIDELINES:\n"
                     f"1. Fix ONLY the primary target file `{rel_path}`.\n"
                     f"2. Modify all unsafe property dereferences (e.g. `taxInfo.amount`, `body.items[0].price`, `body.customer.address.city`) to use safe optional chaining and default fallbacks (e.g. `taxInfo?.amount?.toFixed(2) || '0.00'`).\n"
                     f"3. Do NOT output unified diffs, git diff markers (`@@ -... @@`), or code from related modules.\n"
                     f"4. Output ONLY the complete updated TypeScript code for `{rel_path}` inside a ```typescript ... ``` block without any prose or diff markers.\n"
-                    f"{rlhf_instruction}"
+                    f"{human_feedback_instruction}"
                 )
                 resp = llm.invoke([SystemMessage(content="You are an elite TypeScript SRE AI agent."), HumanMessage(content=prompt)])
                 content_str = str(resp.content).strip()

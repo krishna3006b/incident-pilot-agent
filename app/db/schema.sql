@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS repository_metadata (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS repository_symbols (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repository_id   UUID REFERENCES repository_metadata(id) ON DELETE CASCADE,
+    repository_id   TEXT,
     symbol_name     TEXT NOT NULL,
     symbol_type     TEXT NOT NULL,  -- class, function, method, module, route, interface
     file_path       TEXT NOT NULL,
@@ -49,7 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_symbols_file ON repository_symbols(file_path);
 -- ============================================================
 CREATE TABLE IF NOT EXISTS repository_edges (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repository_id     UUID REFERENCES repository_metadata(id) ON DELETE CASCADE,
+    repository_id     TEXT,
     source_symbol_id  UUID REFERENCES repository_symbols(id) ON DELETE CASCADE,
     target_symbol_id  UUID REFERENCES repository_symbols(id) ON DELETE CASCADE,
     relationship      TEXT NOT NULL,  -- calls, imports, extends, implements, reads, writes
@@ -64,7 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_target ON repository_edges(target_symbol_id
 -- ============================================================
 CREATE TABLE IF NOT EXISTS code_embeddings (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repository_id   UUID REFERENCES repository_metadata(id) ON DELETE CASCADE,
+    repository_id   TEXT,
     commit_sha      TEXT NOT NULL,
     file_path       TEXT NOT NULL,
     language        TEXT,
@@ -87,7 +87,7 @@ CREATE INDEX IF NOT EXISTS code_embeddings_embedding_idx ON code_embeddings USIN
 -- ============================================================
 CREATE TABLE IF NOT EXISTS index_jobs (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repository_id       UUID REFERENCES repository_metadata(id) ON DELETE CASCADE,
+    repository_id       TEXT,
     status              TEXT DEFAULT 'pending',  -- pending, running, completed, failed
     progress            INT DEFAULT 0,
     total_files         INT,
@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS incidents (
     incident_number SERIAL UNIQUE,
     title           VARCHAR(255) NOT NULL,
     service_name    VARCHAR(100) NOT NULL,
-    repository_id   UUID REFERENCES repository_metadata(id) ON DELETE SET NULL,
+    repository_id   TEXT,
     severity        VARCHAR(20) DEFAULT 'P2',
     status          VARCHAR(50) DEFAULT 'RECEIVED',
     confidence      FLOAT DEFAULT 0.0,
@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS knowledge_base (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repository_id   UUID REFERENCES repository_metadata(id) ON DELETE CASCADE,
+    repository_id   TEXT,
     document_type   VARCHAR(50) NOT NULL,
     title           VARCHAR(255) NOT NULL,
     content         TEXT NOT NULL,
@@ -176,10 +176,13 @@ CREATE INDEX IF NOT EXISTS knowledge_base_embedding_idx ON knowledge_base USING 
 -- ============================================================
 -- RPC: Semantic search over code embeddings
 -- ============================================================
+DROP FUNCTION IF EXISTS match_code(VECTOR(384), INT, UUID);
+DROP FUNCTION IF EXISTS match_code(VECTOR(384), INT, TEXT);
+
 CREATE OR REPLACE FUNCTION match_code(
     query_embedding VECTOR(384),
     match_count INT DEFAULT 10,
-    repo_id UUID DEFAULT NULL
+    repo_id TEXT DEFAULT NULL
 )
 RETURNS TABLE (
     id UUID,

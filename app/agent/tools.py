@@ -225,7 +225,7 @@ def create_github_pr(title: str, body: str, patch: str) -> str:
                     file_sha = file_info.get("sha")
                     raw_content = base64.b64decode(file_info.get("content", "")).decode("utf-8")
                     
-                    if patch and "export async function" in patch:
+                    if patch and len(patch) > 50 and "export async function" in patch:
                         fixed_code = patch
                     else:
                         llm = get_llm()

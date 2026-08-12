@@ -255,7 +255,7 @@ def node_create_pr(state: IncidentState) -> IncidentState:
     pr_raw = create_github_pr.invoke({
         "title": f"fix({rel_path.split('/')[3]}): resolve exception in {state['service_name']}",
         "body": pr_body,
-        "patch": state.get("fixed_code") or state["candidate_patch"]
+        "patch": state.get("fixed_code") or ""
     })
     
     try:

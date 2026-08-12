@@ -35,13 +35,22 @@ IN_MEMORY_KB: List[Dict[str, Any]] = [
 
 def get_incidents() -> List[Dict[str, Any]]:
     """Fetch all incidents from Supabase or fallback store."""
+    db_data = []
     if supabase_client:
         try:
             res = supabase_client.table("incidents").select("*").order("created_at", desc=True).execute()
-            return res.data
+            if res.data:
+                db_data = res.data
         except Exception as e:
             logger.error(f"Error querying Supabase: {e}")
-    return IN_MEMORY_INCIDENTS
+            
+    seen_ids = {item["id"] for item in db_data}
+    combined = list(db_data)
+    for inc in IN_MEMORY_INCIDENTS:
+        if inc["id"] not in seen_ids:
+            combined.append(inc)
+            
+    return combined
 
 def get_incident_by_id(incident_id: str) -> Optional[Dict[str, Any]]:
     """Fetch a single incident by ID."""
@@ -53,12 +62,13 @@ def get_incident_by_id(incident_id: str) -> Optional[Dict[str, Any]]:
         except Exception as e:
             logger.error(f"Error querying incident: {e}")
     for inc in IN_MEMORY_INCIDENTS:
-        if inc["id"] == incident_id or str(inc["incident_number"]) == incident_id:
+        if inc["id"] == incident_id or str(inc.get("incident_number", "")) == incident_id:
             return inc
     return None
 
 def create_incident(data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new incident entry."""
+    IN_MEMORY_INCIDENTS.append(data)
     if supabase_client:
         try:
             res = supabase_client.table("incidents").insert(data).execute()
@@ -66,7 +76,6 @@ def create_incident(data: Dict[str, Any]) -> Dict[str, Any]:
                 return res.data[0]
         except Exception as e:
             logger.error(f"Error inserting incident into Supabase: {e}")
-    IN_MEMORY_INCIDENTS.append(data)
     return data
 
 def update_incident_status(incident_id: str, status: str, extra: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -75,6 +84,10 @@ def update_incident_status(incident_id: str, status: str, extra: Optional[Dict[s
     if extra:
         update_data.update(extra)
         
+    for inc in IN_MEMORY_INCIDENTS:
+        if inc["id"] == incident_id:
+            inc.update(update_data)
+            
     if supabase_client:
         try:
             res = supabase_client.table("incidents").update(update_data).eq("id", incident_id).execute()
@@ -85,7 +98,6 @@ def update_incident_status(incident_id: str, status: str, extra: Optional[Dict[s
             
     for inc in IN_MEMORY_INCIDENTS:
         if inc["id"] == incident_id:
-            inc.update(update_data)
             return inc
     return None
 

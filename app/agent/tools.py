@@ -219,7 +219,7 @@ export async function POST(req: Request) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            text: `🚨 *PRODUCTION ALERT: payment-service HTTP 500 Spike!*\\n*Error:* \\\`${errorMessage}\\\`\\n*Environment:* production\\n*Deployment:* v1.8.3`
+            text: `🚨 *PRODUCTION ALERT: payment-service HTTP 500 Spike!*\n*Error:* \`${errorMessage}\`\n*Environment:* production\n*Deployment:* v1.8.3`
           })
         });
       } catch (e) {

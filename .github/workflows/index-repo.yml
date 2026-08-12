@@ -1,0 +1,46 @@
+name: Repository Knowledge Indexer
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository_id:
+        description: 'Repository ID in IncidentPilot'
+        required: true
+        default: 'ordering-system'
+      commit_sha:
+        description: 'Commit SHA to index'
+        required: false
+        default: 'HEAD'
+  push:
+    branches: [ master, main ]
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install httpx sentence-transformers supabase
+
+      - name: Run Repository Indexer
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python -c "
+          from app.agent.indexer import RepositoryIndexer
+          repo_id = '${{ github.event.inputs.repository_id }}' if '${{ github.event.inputs.repository_id }}' else 'ordering-system'
+          commit_sha = '${{ github.event.inputs.commit_sha }}' if '${{ github.event.inputs.commit_sha }}' else 'HEAD'
+          indexer = RepositoryIndexer('.', repo_id, commit_sha)
+          res = indexer.index_repository()
+          print(f'Indexing completed: {res}')
+          "

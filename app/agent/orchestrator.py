@@ -166,8 +166,17 @@ def node_fix(state: IncidentState) -> IncidentState:
     
     if llm and code_content != "// Target code file":
         try:
-            prompt = f"Here is a TypeScript source code file ({rel_path}):\n\n```typescript\n{code_content}\n```\n\nFix this error: '{alert_summary}'. Return ONLY the complete updated TypeScript source code for the file without any explanations or markdown syntax."
-            resp = llm.invoke([SystemMessage(content="You are a senior TypeScript developer AI agent."), HumanMessage(content=prompt)])
+            prompt = (
+                f"You are a senior Site Reliability & TypeScript Engineer AI agent.\n"
+                f"Fix the production error in `{rel_path}`: '{alert_summary}'\n\n"
+                f"Original Source Code:\n```typescript\n{code_content}\n```\n\n"
+                f"STRICT FIX GUIDELINES:\n"
+                f"1. Keep the complete file structure intact (imports, POST export, try/catch block, and Slack alert error handler in catch).\n"
+                f"2. Use safe optional chaining or default fallback values (e.g. `const city = body?.customer?.address?.city || 'UNKNOWN';`) so property access never throws TypeError.\n"
+                f"3. Do NOT throw uncaught errors. Ensure the route safely returns NextResponse.json.\n"
+                f"4. Output ONLY valid TypeScript source code. No explanations, no markdown comments."
+            )
+            resp = llm.invoke([SystemMessage(content="You are an elite TypeScript SRE AI agent."), HumanMessage(content=prompt)])
             content_str = str(resp.content).strip()
             if "```typescript" in content_str:
                 fixed_code = content_str.split("```typescript")[1].split("```")[0].strip()

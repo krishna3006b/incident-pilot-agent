@@ -146,7 +146,6 @@ def run_tests_in_sandbox(test_command: str, candidate_patch: str) -> str:
     res = run_in_docker_sandbox(command=test_command, patch=candidate_patch)
     return json.dumps(res, indent=2)
 
-@tool
 def get_llm():
     if settings.GROQ_API_KEY:
         try:

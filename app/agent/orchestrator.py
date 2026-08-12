@@ -33,11 +33,64 @@ class IncidentState(TypedDict):
     token_usage: int
     error: Optional[str]
 
+DEFAULT_TARGET_TEMPLATES = {
+    "src/app/api/checkout/route.ts": """import { NextResponse } from 'next/server';
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const city = body.customer.address.city;
+    return NextResponse.json({ status: 'SUCCESS', transaction_id: 'tx_123', city });
+  } catch (error: any) {
+    const errorMessage = error.message || "TypeError: Cannot read properties of null (reading 'address')";
+    return NextResponse.json({ status: 'ERROR', error: errorMessage }, { status: 500 });
+  }
+}""",
+    "src/app/api/discount/route.ts": """import { NextResponse } from 'next/server';
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const firstItemPrice = body.items[0].price;
+    const discount = firstItemPrice * 0.15;
+    return NextResponse.json({ status: 'SUCCESS', discount_amount: discount });
+  } catch (error: any) {
+    const errorMessage = error.message || "TypeError: Cannot read properties of undefined (reading 'price')";
+    return NextResponse.json({ status: 'ERROR', error: errorMessage }, { status: 500 });
+  }
+}""",
+    "src/app/api/inventory/route.ts": """import { NextResponse } from 'next/server';
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const stock = body.product.stock_quantity;
+    return NextResponse.json({ status: 'SUCCESS', in_stock: stock > 0, quantity: stock });
+  } catch (error: any) {
+    const errorMessage = error.message || "TypeError: Cannot read properties of null (reading 'stock_quantity')";
+    return NextResponse.json({ status: 'ERROR', error: errorMessage }, { status: 500 });
+  }
+}""",
+    "src/app/api/user/profile/route.ts": """import { NextResponse } from 'next/server';
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const { email, role } = body.user;
+    return NextResponse.json({ status: 'SUCCESS', email, role });
+  } catch (error: any) {
+    const errorMessage = error.message || "TypeError: Cannot destructure property 'email' of 'body.user' as it is null";
+    return NextResponse.json({ status: 'ERROR', error: errorMessage }, { status: 500 });
+  }
+}"""
+}
+
 def initialize_llm():
-    if settings.GROQ_API_KEY:
+    groq_key = settings.GROQ_API_KEY or os.getenv("GROQ_API_KEY")
+    if groq_key and ChatGroq:
         try:
             return ChatGroq(
-                groq_api_key=settings.GROQ_API_KEY,
+                groq_api_key=groq_key,
                 model_name="llama-3.3-70b-versatile",
                 temperature=0.1,
                 max_tokens=2048
@@ -45,54 +98,6 @@ def initialize_llm():
         except Exception as e:
             logger.warning(f"Groq LLM init failed: {e}. Using deterministic fallback engine.")
     return None
-
-def initialize_llm_with_tools():
-    if settings.GROQ_API_KEY and ChatGroq:
-        try:
-            return ChatGroq(
-                groq_api_key=settings.GROQ_API_KEY,
-                model_name="llama-3.3-70b-versatile",
-                temperature=0.1,
-                max_tokens=2048
-            ).bind_tools(ALL_AGENT_TOOLS)
-        except Exception as e:
-            logger.warning(f"Groq LLM init with tools failed: {e}")
-    return None
-
-# State Machine Nodes
-def node_validate(state: IncidentState) -> IncidentState:
-    """Validate incoming incident alert."""
-    logger.info(f"State [VALIDATING] incident: {state['incident_id']}")
-    state["status"] = "VALIDATING"
-    state["step_count"] += 1
-    update_incident_status(state["incident_id"], "VALIDATING")
-    return state
-
-def node_investigate(state: IncidentState) -> IncidentState:
-    """Investigate logs, traces, and metrics."""
-    logger.info(f"State [INVESTIGATING] incident: {state['incident_id']}")
-    state["status"] = "INVESTIGATING"
-    state["step_count"] += 1
-    
-    # Dynamically search workspace for affected code
-    search_query = state.get("alert_summary", "")
-    code_results = search_code.invoke({"repository": state["service_name"], "query": search_query})
-    
-    # Read target code file
-    target_file = "target_app/src/app/api/checkout/route.ts"
-    file_content = read_file.invoke({"repository": state["service_name"], "filepath": target_file})
-    
-    # Analyze distributed trace waterfall
-    trace_data = get_distributed_trace.invoke({"trace_id": "tr_8f99a012b"})
-    
-    state["logs"] = code_results
-    state["trace"] = trace_data
-    
-    update_incident_status(state["incident_id"], "INVESTIGATING", {
-        "logs": state["logs"],
-        "trace": state["trace"]
-    })
-    return state
 
 def find_and_read_target_code(alert_summary: str):
     import re
@@ -137,7 +142,7 @@ def find_and_read_target_code(alert_summary: str):
         except Exception:
             pass
             
-    return rel_path, "// Target code file"
+    return rel_path, DEFAULT_TARGET_TEMPLATES.get(rel_path, DEFAULT_TARGET_TEMPLATES["src/app/api/checkout/route.ts"])
 
 def node_diagnose(state: IncidentState) -> IncidentState:
     """Perform root cause analysis using evidence and Groq LLM."""

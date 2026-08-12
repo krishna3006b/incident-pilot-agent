@@ -16,10 +16,9 @@ if create_client and settings.SUPABASE_URL and settings.SUPABASE_KEY:
     try:
         supabase_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
         logger.info("Connected to Supabase successfully.")
-        # Temporarily disable to prevent threadpool exhaustion since table doesn't exist
-        supabase_client = None 
     except Exception as e:
         logger.warning(f"Failed to connect to Supabase: {e}. Using in-memory fallback store.")
+        supabase_client = None
 
 # In-memory store for fallback mode when Supabase is not configured
 IN_MEMORY_INCIDENTS: List[Dict[str, Any]] = []

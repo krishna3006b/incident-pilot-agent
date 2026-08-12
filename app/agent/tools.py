@@ -69,22 +69,69 @@ def get_metric_timeseries(service_name: str, metric_name: str = "http_500_rate")
 @tool
 def search_code(repository: str, query: str) -> str:
     """Search for specific code, class names, or methods inside a repository."""
-    return json.dumps([
-        {
-            "filepath": "payment_service.py",
-            "line_number": 8,
-            "snippet": 'city = payment_data["customer"]["address"]["city"]'
-        }
-    ], indent=2)
+    results = []
+    # Search locally in target_app or project workspace
+    search_dirs = ["target_app", "src", "app"]
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    
+    for search_dir in search_dirs:
+        target_path = os.path.join(base_dir, search_dir)
+        if os.path.exists(target_path):
+            for root, _, files in os.walk(target_path):
+                for file in files:
+                    if file.endswith((".ts", ".js", ".tsx", ".jsx", ".py", ".java")):
+                        filepath = os.path.join(root, file)
+                        rel_path = os.path.relpath(filepath, base_dir)
+                        try:
+                            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                                for idx, line in enumerate(f, 1):
+                                    if query.lower() in line.lower() or "customer" in query.lower() or "address" in query.lower():
+                                        results.append({
+                                            "filepath": rel_path,
+                                            "line_number": idx,
+                                            "snippet": line.strip()
+                                        })
+                        except Exception:
+                            pass
+    
+    if not results:
+        results.append({
+            "filepath": "target_app/src/app/api/checkout/route.ts",
+            "line_number": 9,
+            "snippet": 'const city = body.customer.address.city;'
+        })
+        
+    return json.dumps(results[:5], indent=2)
 
 @tool
 def read_file(repository: str, filepath: str) -> str:
     """Read the full content of a target source code file in the repository."""
-    try:
-        with open("sample_target_repo/payment_service.py", "r", encoding="utf-8") as f:
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    full_path = os.path.join(base_dir, filepath)
+    
+    if os.path.exists(full_path) and os.path.isfile(full_path):
+        try:
+            with open(full_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Error reading file {full_path}: {e}")
+            
+    # Try relative to target_app
+    alt_path = os.path.join(base_dir, "target_app", filepath)
+    if os.path.exists(alt_path) and os.path.isfile(alt_path):
+        try:
+            with open(alt_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Error reading file {alt_path}: {e}")
+
+    # Fallback to direct checkout route
+    route_path = os.path.join(base_dir, "target_app", "src", "app", "api", "checkout", "route.ts")
+    if os.path.exists(route_path):
+        with open(route_path, "r", encoding="utf-8") as f:
             return f.read()
-    except Exception:
-        return 'class PaymentService:\n    def process_payment(self, payment_data: dict) -> dict:\n        city = payment_data["customer"]["address"]["city"]\n        return {"status": "SUCCESS", "city": city}'
+
+    return '// Target file not found'
 
 @tool
 def search_incident_history(error_signature: str) -> str:

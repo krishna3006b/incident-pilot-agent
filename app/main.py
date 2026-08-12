@@ -148,10 +148,14 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
     incident_id = str(uuid.uuid4())
     inc_num = 186 + len(get_incidents())
     
+    clean_title = text.replace(":rotating_light:", "").replace("*", "").split("\n")[0].strip()
+    if not clean_title:
+        clean_title = f"HTTP 500 Spike in {service_name}"
+
     incident_record = {
         "id": incident_id,
         "incident_number": inc_num,
-        "title": text[:80],
+        "title": clean_title[:80],
         "service_name": service_name,
         "severity": "P1",
         "status": "RECEIVED",

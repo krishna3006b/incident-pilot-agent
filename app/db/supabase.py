@@ -54,17 +54,27 @@ def get_incidents() -> List[Dict[str, Any]]:
 
 def get_incident_by_id(incident_id: str) -> Optional[Dict[str, Any]]:
     """Fetch a single incident by ID."""
+    db_item = None
     if supabase_client:
         try:
             res = supabase_client.table("incidents").select("*").eq("id", incident_id).execute()
             if res.data:
-                return res.data[0]
+                db_item = res.data[0]
         except Exception as e:
             logger.error(f"Error querying incident: {e}")
+            
+    mem_item = None
     for inc in IN_MEMORY_INCIDENTS:
         if inc["id"] == incident_id or str(inc.get("incident_number", "")) == incident_id:
-            return inc
-    return None
+            mem_item = inc
+            break
+            
+    if db_item and mem_item:
+        merged = dict(db_item)
+        merged.update({k: v for k, v in mem_item.items() if v})
+        return merged
+        
+    return db_item or mem_item
 
 def create_incident(data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new incident entry."""

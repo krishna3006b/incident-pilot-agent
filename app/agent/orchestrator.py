@@ -318,7 +318,84 @@ def _calculate_evidence_confidence(alert_summary: str, rel_path: str, code_conte
     if "/api/" in text:
         score += 0.05
     
-    return round(min(1.0, max(0.1, score)), 2)
+def _detect_language_and_framework(rel_path: str, code_content: str) -> Dict[str, str]:
+    """Dynamically inspect target file extension and code structure to determine language and framework guidelines."""
+    ext = rel_path.split(".")[-1].lower() if "." in rel_path else ""
+    
+    if ext == "java":
+        return {
+            "language": "Java",
+            "framework": "Spring Boot / Java EE" if "@" in code_content or "springframework" in code_content else "Java",
+            "code_block_lang": "java",
+            "rules": (
+                "1. Target file is a Java class.\n"
+                "2. Preserve all Java package declarations, imports, annotations (e.g. `@RestController`, `@PostMapping`), and class signatures.\n"
+                "3. Use null checks (e.g. `if (obj != null)`), `Optional.ofNullable(...)`, or default fallbacks for safe property access.\n"
+                "4. Output ONLY the complete updated Java code inside a ```java ... ``` block."
+            )
+        }
+    elif ext in ("py", "python"):
+        return {
+            "language": "Python",
+            "framework": "FastAPI" if "fastapi" in code_content.lower() or "basemodel" in code_content.lower() else "Python",
+            "code_block_lang": "python",
+            "rules": (
+                "1. Target file is a Python module.\n"
+                "2. Preserve all function signatures, imports, and Pydantic schemas.\n"
+                "3. Add defensive null/None checks (`if obj is not None:`) or default fallbacks (`getattr(...)`).\n"
+                "4. Output ONLY the complete updated Python code inside a ```python ... ``` block."
+            )
+        }
+    elif ext in ("ts", "tsx", "js", "jsx"):
+        if "next/server" in code_content or "nextresponse" in code_content.lower() or "app/api/" in rel_path:
+            return {
+                "language": "TypeScript (Next.js App Router)",
+                "framework": "Next.js App Router",
+                "code_block_lang": "typescript",
+                "rules": (
+                    "1. Target file is a Next.js App Router API route (`src/app/api/.../route.ts`).\n"
+                    "2. You MUST use Next.js App Router format:\n"
+                    "   `import { NextResponse } from 'next/server';`\n"
+                    "   `export async function POST(req: Request) { ... }`\n"
+                    "   `const body = await req.json();`\n"
+                    "   `return NextResponse.json({ ... });`\n"
+                    "3. DO NOT use Express.js syntax (`express`, `Router()`, `res.status()`, `res.send()`, `req.body`).\n"
+                    "4. Output ONLY the complete updated Next.js TypeScript code inside a ```typescript ... ``` block."
+                )
+            }
+        elif "express" in code_content.lower() or "router()" in code_content.lower():
+            return {
+                "language": "TypeScript (Express.js)",
+                "framework": "Express.js",
+                "code_block_lang": "typescript",
+                "rules": (
+                    "1. Target file is an Express.js router module.\n"
+                    "2. Preserve existing Express router handlers (`req: Request, res: Response`).\n"
+                    "3. Use safe optional chaining (`req.body?.user?.email`) and return `res.status(...).json(...)`.\n"
+                    "4. Output ONLY the complete updated Express TypeScript code inside a ```typescript ... ``` block."
+                )
+            }
+        else:
+            return {
+                "language": "TypeScript / JavaScript",
+                "framework": "Generic TS/JS",
+                "code_block_lang": "typescript",
+                "rules": (
+                    "1. Preserve existing module exports and function signatures.\n"
+                    "2. Add optional chaining `?.` or default fallbacks `||` for property dereferences.\n"
+                    "3. Output ONLY updated code inside a ```typescript ... ``` block."
+                )
+            }
+    else:
+        return {
+            "language": ext.upper() if ext else "Generic",
+            "framework": "Generic",
+            "code_block_lang": ext if ext else "text",
+            "rules": (
+                "1. Preserve existing code structure and signatures.\n"
+                "2. Fix unsafe property dereferences safely."
+            )
+        }
 
 def node_fix(state: IncidentState) -> IncidentState:
     """Generate candidate code fix patch dynamically using Groq LLM with retries."""
@@ -357,26 +434,21 @@ def node_fix(state: IncidentState) -> IncidentState:
                     alert_text=alert_summary
                 )
 
+                meta = _detect_language_and_framework(rel_path, code_content)
                 prompt = (
-                    f"You are a senior Site Reliability & TypeScript Engineer AI agent.\n"
+                    f"You are a senior Site Reliability & {meta['language']} Engineer AI agent.\n"
                     f"{packet.to_markdown()}\n\n"
-                    f"STRICT NEXT.JS APP ROUTER FIX GUIDELINES:\n"
-                    f"1. Target file `{rel_path}` is a NEXT.JS APP ROUTER API ROUTE (`src/app/api/.../route.ts`).\n"
-                    f"2. You MUST use Next.js App Router format:\n"
-                    f"   `import {{ NextResponse }} from 'next/server';`\n"
-                    f"   `export async function POST(req: Request) {{ ... }}`\n"
-                    f"   `const body = await req.json();`\n"
-                    f"   `return NextResponse.json({{ ... }});`\n"
-                    f"3. NEVER use Express.js syntax (`express`, `Router()`, `res.status()`, `res.send()`, `req.body`, `../types`). Express code will break Next.js builds!\n"
-                    f"4. Modify all unsafe property dereferences (e.g. `body.user.email`, `body.items[0].price`, `body.customer.address.city`) to use safe optional chaining and default fallbacks (e.g. `const {{ email, role }} = body.user || {{}};` or `const email = body.user?.email || null;`).\n"
+                    f"STRICT {meta['framework'].upper()} FIX GUIDELINES:\n"
+                    f"{meta['rules']}\n"
                     f"5. Do NOT output unified diffs or git diff markers (`@@ -... @@`).\n"
-                    f"6. Output ONLY the complete updated Next.js TypeScript code for `{rel_path}` inside a ```typescript ... ``` block without any prose.\n"
                     f"{human_feedback_instruction}"
                 )
-                resp = llm.invoke([SystemMessage(content="You are an elite Next.js SRE AI agent."), HumanMessage(content=prompt)])
+                resp = llm.invoke([SystemMessage(content=f"You are an elite {meta['framework']} SRE AI agent."), HumanMessage(content=prompt)])
                 content_str = str(resp.content).strip()
-                if "```typescript" in content_str:
-                    candidate = content_str.split("```typescript")[1].split("```")[0].strip()
+                
+                lang_tag = f"```{meta['code_block_lang']}"
+                if lang_tag in content_str:
+                    candidate = content_str.split(lang_tag)[1].split("```")[0].strip()
                 elif "```" in content_str:
                     candidate = content_str.split("```")[1].split("```")[0].strip()
                 else:
@@ -388,16 +460,25 @@ def node_fix(state: IncidentState) -> IncidentState:
                 import re
                 candidate = re.sub(r'@@\s*-\d+,\d+\s+\+\d+,\d+\s*@@', '', candidate).strip()
                 
-                has_export = "export" in candidate
-                has_safety = "?." in candidate or "if (" in candidate or "||" in candidate or "try" in candidate
-                has_no_express = "express" not in candidate.lower() and "router()" not in candidate.lower() and "nextresponse" in candidate.lower()
+                # Framework-aware validation
+                has_safety = "?." in candidate or "if (" in candidate or "if " in candidate or "||" in candidate or "try" in candidate or "Optional" in candidate
+                if meta["framework"] == "Next.js App Router":
+                    is_valid_framework = "nextresponse" in candidate.lower() and "express" not in candidate.lower()
+                elif meta["framework"] == "Express.js":
+                    is_valid_framework = "res." in candidate or "req." in candidate
+                elif meta["code_block_lang"] == "java":
+                    is_valid_framework = "class" in candidate or "public" in candidate or "package" in candidate or "@" in candidate
+                elif meta["code_block_lang"] == "python":
+                    is_valid_framework = "def " in candidate or "class " in candidate
+                else:
+                    is_valid_framework = True
                 
-                if len(candidate) > 30 and has_export and has_safety and has_no_express:
+                if len(candidate) > 30 and has_safety and is_valid_framework:
                     fixed_code = candidate
-                    logger.info(f"LLM fix generation succeeded on attempt {attempt}")
+                    logger.info(f"LLM fix generation succeeded on attempt {attempt} for {meta['language']}")
                     break
                 else:
-                    logger.warning(f"LLM attempt {attempt} produced invalid patch (Express syntax or missing NextResponse). Retrying...")
+                    logger.warning(f"LLM attempt {attempt} produced invalid patch for {meta['language']}. Retrying...")
             except Exception as e:
                 logger.warning(f"Groq fix generation attempt {attempt} failed: {e}")
                 if "rate_limit" in str(e).lower() or "429" in str(e):

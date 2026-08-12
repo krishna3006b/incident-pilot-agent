@@ -80,14 +80,19 @@ def node_investigate(state: IncidentState) -> IncidentState:
     return state
 
 def find_and_read_target_code(alert_summary: str):
-    text = alert_summary.lower()
+    import re
     rel_path = "src/app/api/checkout/route.ts"
-    if "discount" in text or "price" in text or "undefined" in text:
-        rel_path = "src/app/api/discount/route.ts"
-    elif "inventory" in text or "stock" in text or "stock_quantity" in text:
-        rel_path = "src/app/api/inventory/route.ts"
-    elif "user" in text or "profile" in text or "destructure" in text:
-        rel_path = "src/app/api/user/profile/route.ts"
+    path_match = re.search(r'(src/app/api/[\w/]+\.ts)', alert_summary)
+    if path_match:
+        rel_path = path_match.group(1)
+    else:
+        text = alert_summary.lower()
+        if "discount" in text or "price" in text:
+            rel_path = "src/app/api/discount/route.ts"
+        elif "inventory" in text or "stock" in text:
+            rel_path = "src/app/api/inventory/route.ts"
+        elif "user" in text or "profile" in text:
+            rel_path = "src/app/api/user/profile/route.ts"
         
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
     full_path = os.path.join(base_dir, "target_app", rel_path)

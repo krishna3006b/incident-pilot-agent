@@ -213,6 +213,10 @@ def node_create_pr(state: IncidentState) -> IncidentState:
     rel_path, _ = find_and_read_target_code(alert_summary)
     root_cause = state.get("root_cause") or f"TypeError: Unhandled null/undefined reference in {rel_path}"
     
+    code_preview = ""
+    if state.get("fixed_code"):
+        code_preview = f"### ⚡ Applied AI Fix (`{rel_path}`)\n```typescript\n{state['fixed_code']}\n```\n\n"
+
     pr_body = (
         f"## 🚨 IncidentPilot Autonomous Resolution Report\n\n"
         f"**Service Name:** `{state['service_name']}`\n"
@@ -220,6 +224,7 @@ def node_create_pr(state: IncidentState) -> IncidentState:
         f"**Target File:** `{rel_path}`\n\n"
         f"### 🔍 Root Cause Analysis (Groq Llama 3.3 70B)\n"
         f"{root_cause}\n\n"
+        f"{code_preview}"
         f"### ✅ Verification & Testing\n"
         f"Validated patch syntax and null-check safety. All automated safety checks passed."
     )

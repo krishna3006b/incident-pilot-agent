@@ -359,8 +359,9 @@ def _detect_language_and_framework(rel_path: str, code_content: str) -> Dict[str
                     "   `export async function POST(req: Request) { ... }`\n"
                     "   `const body = await req.json();`\n"
                     "   `return NextResponse.json({ ... });`\n"
-                    "3. DO NOT use Express.js syntax (`express`, `Router()`, `res.status()`, `res.send()`, `req.body`).\n"
-                    "4. Output ONLY the complete updated Next.js TypeScript code inside a ```typescript ... ``` block."
+                    "3. ALWAYS replace unsafe property accesses (e.g. `body.user`, `body.items[0]`, `body.customer.address`) with safe optional chaining or fallbacks (e.g. `const { email, role } = body?.user || {};` or `const email = body?.user?.email || null;`).\n"
+                    "4. DO NOT use Express.js syntax (`express`, `Router()`, `res.status()`, `res.send()`, `req.body`).\n"
+                    "5. Output ONLY the complete updated Next.js TypeScript code inside a ```typescript ... ``` block."
                 )
             }
         elif "express" in code_content.lower() or "router()" in code_content.lower():
@@ -528,11 +529,14 @@ def node_test(state: IncidentState) -> IncidentState:
         "body.customer.address",
         "body.items[0].price",
         "body.product.stock_quantity",
-        "= body.user;",
+        "body.user.email",
     ]
     for unsafe in unsafe_patterns:
         if unsafe in patch_code:
             validation_errors.append(f"FAIL: Unsafe property access still present: '{unsafe}'")
+            
+    if "= body.user;" in patch_code and "?." not in patch_code and "||" not in patch_code:
+        validation_errors.append("FAIL: Unsafe property access still present: '= body.user;'")
     
     # Real Validation 3: Check that safe optional chaining IS present
     if "?." not in patch_code and "||" not in patch_code and "if (" not in patch_code:

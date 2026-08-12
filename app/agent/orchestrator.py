@@ -144,6 +144,41 @@ def find_and_read_target_code(alert_summary: str):
             
     return rel_path, DEFAULT_TARGET_TEMPLATES.get(rel_path, DEFAULT_TARGET_TEMPLATES["src/app/api/checkout/route.ts"])
 
+# State Machine Nodes
+def node_validate(state: IncidentState) -> IncidentState:
+    """Validate incoming incident alert."""
+    logger.info(f"State [VALIDATING] incident: {state['incident_id']}")
+    state["status"] = "VALIDATING"
+    state["step_count"] += 1
+    update_incident_status(state["incident_id"], "VALIDATING")
+    return state
+
+def node_investigate(state: IncidentState) -> IncidentState:
+    """Investigate logs, traces, and metrics."""
+    logger.info(f"State [INVESTIGATING] incident: {state['incident_id']}")
+    state["status"] = "INVESTIGATING"
+    state["step_count"] += 1
+    
+    # Dynamically search workspace for affected code
+    search_query = state.get("alert_summary", "")
+    code_results = search_code.invoke({"repository": state["service_name"], "query": search_query})
+    
+    # Read target code file
+    target_file = "target_app/src/app/api/checkout/route.ts"
+    file_content = read_file.invoke({"repository": state["service_name"], "filepath": target_file})
+    
+    # Analyze distributed trace waterfall
+    trace_data = get_distributed_trace.invoke({"trace_id": "tr_8f99a012b"})
+    
+    state["logs"] = code_results
+    state["trace"] = trace_data
+    
+    update_incident_status(state["incident_id"], "INVESTIGATING", {
+        "logs": state["logs"],
+        "trace": state["trace"]
+    })
+    return state
+
 def node_diagnose(state: IncidentState) -> IncidentState:
     """Perform root cause analysis using evidence and Groq LLM."""
     logger.info(f"State [DIAGNOSING] incident: {state['incident_id']}")

@@ -209,7 +209,7 @@ def find_and_read_target_code(alert_summary: str):
 
 
 # --- Sandbox Trigger ---
-def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, callback_url: str = "") -> bool:
+def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, target_branch: str = "main", callback_url: str = "") -> bool:
     """Trigger GitHub Actions sandbox-test.yml via repository_dispatch on agent repo."""
     github_token = os.getenv("GITHUB_TOKEN")
     agent_repo = os.getenv("AGENT_REPO", "krishna3006b/incident-pilot-agent")
@@ -230,6 +230,7 @@ def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, ca
                 "client_payload": {
                     "incident_id": incident_id,
                     "target_file": target_file,
+                    "target_branch": target_branch,
                     "patch_code": patch_code[:5000],
                     "callback_url": callback_url
                 }

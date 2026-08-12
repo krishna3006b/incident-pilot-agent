@@ -29,7 +29,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install httpx sentence-transformers supabase
+          pip install -r requirements.txt sentence-transformers
 
       - name: Run Repository Indexer
         env:

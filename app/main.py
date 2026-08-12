@@ -47,6 +47,19 @@ def list_incidents():
     """Fetch list of all production incidents."""
     return get_incidents()
 
+@app.get("/api/v1/incidents/stream_all")
+async def stream_all_incidents():
+    """SSE streaming endpoint for all incidents to replace 2-second polling."""
+    async def event_generator():
+        last_data = None
+        while True:
+            current_data = get_incidents()
+            if current_data != last_data:
+                yield f"data: {json.dumps(current_data)}\n\n"
+                last_data = current_data
+            await asyncio.sleep(2)
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 @app.get("/api/v1/incidents/{incident_id}")
 def get_incident(incident_id: str):
     """Fetch detailed record for a specific incident."""
@@ -178,18 +191,7 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
         "message": "Slack alert parsed and AI Agent dispatched."
     }
 
-@app.get("/api/v1/incidents/stream_all")
-async def stream_all_incidents():
-    """SSE streaming endpoint for all incidents to replace 2-second polling."""
-    async def event_generator():
-        last_data = None
-        while True:
-            current_data = get_incidents()
-            if current_data != last_data:
-                yield f"data: {json.dumps(current_data)}\n\n"
-                last_data = current_data
-            await asyncio.sleep(2)
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 @app.post("/api/v1/webhooks/github")
 async def handle_github_webhook(request: Request):

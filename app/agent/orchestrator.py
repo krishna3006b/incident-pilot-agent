@@ -99,176 +99,6 @@ def initialize_llm():
             logger.warning(f"Groq LLM init failed: {e}. Using deterministic fallback engine.")
     return None
 
-def generate_deterministic_sre_fix(rel_path: str, code_content: str) -> str:
-    """Deterministic SRE fix generator that replaces unsafe property accesses with optional chaining."""
-    if "checkout" in rel_path:
-        return """import { NextResponse } from 'next/server';
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-
-    // Safe optional chaining fallback applied by AI Agent
-    const city = body?.customer?.address?.city || 'UNKNOWN_CITY';
-
-    return NextResponse.json({
-      status: 'SUCCESS',
-      transaction_id: 'tx_' + Math.floor(Math.random() * 1000000),
-      city: city
-    });
-  } catch (error: any) {
-    const errorMessage = error.message || "TypeError: Cannot read properties of null (reading 'address')";
-    const stackTrace = error.stack || "TypeError: Cannot read properties of null (reading 'address') at POST (src/app/api/checkout/route.ts:8:28)";
-    console.error('Checkout API Error:', errorMessage);
-
-    const slackUrl = process.env.SLACK_WEBHOOK_URL;
-    if (slackUrl) {
-      try {
-        await fetch(slackUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: `🚨 *PRODUCTION ALERT: ordering-system HTTP 500 Spike!*\\n*Error:* \`${errorMessage}\`\\n*Endpoint:* \`POST /api/checkout\`\\n*Stack:* \`${stackTrace.split('\\n')[0]} at POST (src/app/api/checkout/route.ts:8)\`\\n*Environment:* production\\n*Deployment:* v1.8.3`
-          })
-        });
-      } catch (e) {
-        console.error('Failed to send Slack alert:', e);
-      }
-    }
-    return NextResponse.json(
-      { status: 'ERROR', error: errorMessage },
-      { status: 500 }
-    );
-  }
-}"""
-    elif "discount" in rel_path:
-        return """import { NextResponse } from 'next/server';
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-
-    // Safe optional chaining fallback applied by AI Agent
-    const firstItemPrice = body?.items?.[0]?.price || 0;
-    const discount = firstItemPrice * 0.15;
-
-    return NextResponse.json({
-      status: 'SUCCESS',
-      discount_amount: discount
-    });
-  } catch (error: any) {
-    const errorMessage = error.message || "TypeError: Cannot read properties of undefined (reading 'price')";
-    const stackTrace = error.stack || "TypeError: Cannot read properties of undefined (reading 'price') at POST (src/app/api/discount/route.ts:8:29)";
-    console.error('Discount API Error:', errorMessage);
-
-    const slackUrl = process.env.SLACK_WEBHOOK_URL;
-    if (slackUrl) {
-      try {
-        await fetch(slackUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: `🚨 *PRODUCTION ALERT: ordering-system HTTP 500 Spike!*\\n*Error:* \`${errorMessage}\`\\n*Endpoint:* \`POST /api/discount\`\\n*Stack:* \`${stackTrace.split('\\n')[0]} at POST (src/app/api/discount/route.ts:8)\`\\n*Environment:* production\\n*Deployment:* v1.8.3`
-          })
-        });
-      } catch (e) {
-        console.error('Failed to send Slack alert:', e);
-      }
-    }
-    return NextResponse.json(
-      { status: 'ERROR', error: errorMessage },
-      { status: 500 }
-    );
-  }
-}"""
-    elif "inventory" in rel_path:
-        return """import { NextResponse } from 'next/server';
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-
-    // Safe optional chaining fallback applied by AI Agent
-    const stock = body?.product?.stock_quantity || 0;
-
-    return NextResponse.json({
-      status: 'SUCCESS',
-      in_stock: stock > 0,
-      quantity: stock
-    });
-  } catch (error: any) {
-    const errorMessage = error.message || "TypeError: Cannot read properties of null (reading 'stock_quantity')";
-    const stackTrace = error.stack || "TypeError: Cannot read properties of null (reading 'stock_quantity') at POST (src/app/api/inventory/route.ts:8:29)";
-    console.error('Inventory API Error:', errorMessage);
-
-    const slackUrl = process.env.SLACK_WEBHOOK_URL;
-    if (slackUrl) {
-      try {
-        await fetch(slackUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: `🚨 *PRODUCTION ALERT: ordering-system HTTP 500 Spike!*\\n*Error:* \`${errorMessage}\`\\n*Endpoint:* \`POST /api/inventory\`\\n*Stack:* \`${stackTrace.split('\\n')[0]} at POST (src/app/api/inventory/route.ts:8)\`\\n*Environment:* production\\n*Deployment:* v1.8.3`
-          })
-        });
-      } catch (e) {
-        console.error('Failed to send Slack alert:', e);
-      }
-    }
-    return NextResponse.json(
-      { status: 'ERROR', error: errorMessage },
-      { status: 500 }
-    );
-  }
-}"""
-    elif "profile" in rel_path or "user" in rel_path:
-        return """import { NextResponse } from 'next/server';
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-
-    // Safe optional chaining fallback applied by AI Agent
-    const email = body?.user?.email || 'guest@example.com';
-    const role = body?.user?.role || 'GUEST';
-
-    return NextResponse.json({
-      status: 'SUCCESS',
-      email,
-      role
-    });
-  } catch (error: any) {
-    const errorMessage = error.message || "TypeError: Cannot destructure property 'email' of 'body.user' as it is null";
-    const stackTrace = error.stack || "TypeError: Cannot destructure property 'email' of 'body.user' as it is null at POST (src/app/api/user/profile/route.ts:8:29)";
-    console.error('User Profile API Error:', errorMessage);
-
-    const slackUrl = process.env.SLACK_WEBHOOK_URL;
-    if (slackUrl) {
-      try {
-        await fetch(slackUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: `🚨 *PRODUCTION ALERT: ordering-system HTTP 500 Spike!*\\n*Error:* \`${errorMessage}\`\\n*Endpoint:* \`POST /api/user/profile\`\\n*Stack:* \`${stackTrace.split('\\n')[0]} at POST (src/app/api/user/profile/route.ts:8)\`\\n*Environment:* production\\n*Deployment:* v1.8.3`
-          })
-        });
-      } catch (e) {
-        console.error('Failed to send Slack alert:', e);
-      }
-    }
-    return NextResponse.json(
-      { status: 'ERROR', error: errorMessage },
-      { status: 500 }
-    );
-  }
-}"""
-    fixed = code_content
-    fixed = fixed.replace("body.items[0].price", "body?.items?.[0]?.price || 0")
-    fixed = fixed.replace("body.customer.address.city", "body?.customer?.address?.city || 'UNKNOWN'")
-    fixed = fixed.replace("body.product.stock_quantity", "body?.product?.stock_quantity || 0")
-    fixed = fixed.replace("const { email, role } = body.user;", "const email = body?.user?.email || 'guest@example.com';\n    const role = body?.user?.role || 'GUEST';")
-    return fixed
-
 def find_and_read_target_code(alert_summary: str):
     import re
     rel_path = "src/app/api/checkout/route.ts"
@@ -445,7 +275,7 @@ def _calculate_evidence_confidence(alert_summary: str, rel_path: str, code_conte
     return round(min(1.0, max(0.1, score)), 2)
 
 def node_fix(state: IncidentState) -> IncidentState:
-    """Generate candidate code fix patch dynamically using Groq LLM."""
+    """Generate candidate code fix patch dynamically using Groq LLM with retries."""
     logger.info(f"State [FIXING] incident: {state['incident_id']} (Attempt {state['fix_attempts'] + 1})")
     state["status"] = "FIXING"
     state["step_count"] += 1
@@ -456,35 +286,47 @@ def node_fix(state: IncidentState) -> IncidentState:
     llm = initialize_llm()
     fixed_code = ""
     
-    if llm:
-        try:
-            prompt = (
-                f"You are a senior Site Reliability & TypeScript Engineer AI agent.\n"
-                f"Fix the production error in `{rel_path}`: '{alert_summary}'\n\n"
-                f"Original Source Code:\n```typescript\n{code_content}\n```\n\n"
-                f"STRICT FIX GUIDELINES:\n"
-                f"1. Modify all direct property accesses (e.g. `body.items[0].price`, `body.customer.address.city`, `body.product.stock_quantity`, `{{ email, role }} = body.user`) to use safe optional chaining and fallback defaults (e.g. `body?.items?.[0]?.price || 0`, `body?.customer?.address?.city || 'UNKNOWN'`).\n"
-                f"2. Ensure the property access lines are updated so the output differs from the bug line.\n"
-                f"3. Keep imports, POST export signature, try/catch block, and Slack alert error handler in catch.\n"
-                f"4. Do NOT throw uncaught errors. Ensure the route safely returns NextResponse.json.\n"
-                f"5. Output ONLY valid code inside ```typescript ... ``` block without any introductory or concluding prose."
-            )
-            resp = llm.invoke([SystemMessage(content="You are an elite TypeScript SRE AI agent."), HumanMessage(content=prompt)])
-            content_str = str(resp.content).strip()
-            if "```typescript" in content_str:
-                fixed_code = content_str.split("```typescript")[1].split("```")[0].strip()
-            elif "```" in content_str:
-                fixed_code = content_str.split("```")[1].split("```")[0].strip()
-            else:
-                fixed_code = content_str
-        except Exception as e:
-            logger.warning(f"Groq fix generation failed: {e}")
-            
-    if not fixed_code or len(fixed_code) < 50:
-        fixed_code = generate_deterministic_sre_fix(rel_path, code_content)
-        
-    state["fixed_code"] = fixed_code
-    state["candidate_patch"] = fixed_code
+    if llm and code_content and code_content != "// Target code file":
+        for attempt in range(1, 4):
+            try:
+                logger.info(f"LLM fix generation attempt {attempt}/3 for {rel_path}")
+                prompt = (
+                    f"You are a senior Site Reliability & TypeScript Engineer AI agent.\n"
+                    f"Fix the production error in `{rel_path}`: '{alert_summary}'\n\n"
+                    f"Original Source Code:\n```typescript\n{code_content}\n```\n\n"
+                    f"STRICT FIX GUIDELINES:\n"
+                    f"1. Modify all direct property accesses (e.g. `body.items[0].price`, `body.customer.address.city`, `body.product.stock_quantity`, `{{ email, role }} = body.user`) to use safe optional chaining and fallback defaults (e.g. `body?.items?.[0]?.price || 0`, `body?.customer?.address?.city || 'UNKNOWN'`).\n"
+                    f"2. Ensure the property access lines are updated so the output differs from the bug line.\n"
+                    f"3. Keep imports, POST export signature, try/catch block, and Slack alert error handler in catch.\n"
+                    f"4. Do NOT throw uncaught errors. Ensure the route safely returns NextResponse.json.\n"
+                    f"5. Output ONLY valid code inside ```typescript ... ``` block without any introductory or concluding prose."
+                )
+                resp = llm.invoke([SystemMessage(content="You are an elite TypeScript SRE AI agent."), HumanMessage(content=prompt)])
+                content_str = str(resp.content).strip()
+                if "```typescript" in content_str:
+                    candidate = content_str.split("```typescript")[1].split("```")[0].strip()
+                elif "```" in content_str:
+                    candidate = content_str.split("```")[1].split("```")[0].strip()
+                else:
+                    candidate = content_str.strip()
+                    
+                if len(candidate) > 50 and "export async function" in candidate and "?." in candidate:
+                    fixed_code = candidate
+                    logger.info(f"LLM fix generation succeeded on attempt {attempt}")
+                    break
+                else:
+                    logger.warning(f"LLM attempt {attempt} produced invalid patch (length: {len(candidate)}). Retrying...")
+            except Exception as e:
+                logger.warning(f"Groq fix generation attempt {attempt} failed: {e}")
+                time.sleep(1)
+
+    if not fixed_code:
+        logger.error(f"AI Agent was unable to compute a verified fix for {rel_path}. Flagging for human SRE review.")
+        state["fixed_code"] = ""
+        state["candidate_patch"] = f"// NO_AUTOMATED_FIX: LLM was unable to compute a fix for {rel_path}. Human engineering review required."
+    else:
+        state["fixed_code"] = fixed_code
+        state["candidate_patch"] = fixed_code
 
     update_incident_status(state["incident_id"], "FIXING", {
         "candidate_patch": state["candidate_patch"]
@@ -497,7 +339,13 @@ def node_test(state: IncidentState) -> IncidentState:
     state["status"] = "TESTING"
     state["step_count"] += 1
     
-    patch_code = state.get("fixed_code", state.get("candidate_patch", ""))
+    patch_code = state.get("fixed_code", "")
+    if not patch_code or "NO_AUTOMATED_FIX" in patch_code:
+        state["test_results"] = "FAIL: AI model was unable to generate a valid fix patch. Human engineering review required."
+        logger.warning(f"Patch validation FAILED: No valid patch code generated for incident {state['incident_id']}")
+        update_incident_status(state["incident_id"], "TESTING")
+        return state
+
     validation_errors = []
     
     # Real Validation 1: Check for required TypeScript structural elements
@@ -573,6 +421,17 @@ def node_test(state: IncidentState) -> IncidentState:
     update_incident_status(state["incident_id"], "TESTING")
     return state
 
+def node_failed(state: IncidentState) -> IncidentState:
+    """Handle incident resolution failure cleanly when AI fix cannot be computed or verified."""
+    logger.info(f"State [FAILED] incident: {state['incident_id']}")
+    state["status"] = "FAILED"
+    state["step_count"] += 1
+    update_incident_status(state["incident_id"], "FAILED", {
+        "candidate_patch": state.get("candidate_patch", "// Fix generation failed."),
+        "test_results": state.get("test_results", "AI model was unable to compute a verified solution.")
+    })
+    return state
+
 def node_create_pr(state: IncidentState) -> IncidentState:
     """Create GitHub PR and request human review."""
     logger.info(f"State [PR_READY] incident: {state['incident_id']}")
@@ -619,8 +478,9 @@ def node_create_pr(state: IncidentState) -> IncidentState:
 
 # Conditional Router
 def route_after_test(state: IncidentState) -> str:
-    if "error" in state.get("test_results", "").lower():
-        if state["fix_attempts"] < settings.MAX_FIX_ATTEMPTS:
+    test_res = state.get("test_results", "").lower()
+    if "fail" in test_res or "error" in test_res:
+        if state["fix_attempts"] < settings.MAX_FIX_ATTEMPTS and state.get("fixed_code"):
             return "fix"
         return "failed"
     return "create_pr"
@@ -632,6 +492,7 @@ if StateGraph is not None:
     workflow.add_node("diagnose", node_diagnose)
     workflow.add_node("fix", node_fix)
     workflow.add_node("test", node_test)
+    workflow.add_node("failed", node_failed)
     workflow.add_node("create_pr", node_create_pr)
 
     workflow.set_entry_point("validate")
@@ -643,9 +504,10 @@ if StateGraph is not None:
     workflow.add_conditional_edges("test", route_after_test, {
         "fix": "fix",
         "create_pr": "create_pr",
-        "failed": END
+        "failed": "failed"
     })
     workflow.add_edge("create_pr", END)
+    workflow.add_edge("failed", END)
     orchestrator_graph = workflow.compile()
 else:
     orchestrator_graph = None
@@ -672,11 +534,14 @@ def run_incident_orchestrator(incident_id: str, service_name: str, summary: str)
     if orchestrator_graph:
         return orchestrator_graph.invoke(initial_state)
     
-    # Fallback deterministic state sequence
+    # Fallback execution sequence
     state = node_validate(initial_state)
     state = node_investigate(state)
     state = node_diagnose(state)
     state = node_fix(state)
     state = node_test(state)
-    state = node_create_pr(state)
+    if "fail" in state.get("test_results", "").lower() or "error" in state.get("test_results", "").lower():
+        state = node_failed(state)
+    else:
+        state = node_create_pr(state)
     return state

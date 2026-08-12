@@ -251,9 +251,12 @@ def create_github_pr(title: str, body: str, target_file: str = "", patch: str = 
             else:
                 fixed_code = patch if patch else ""
 
-        if not fixed_code:
-            from app.agent.orchestrator import generate_deterministic_sre_fix
-            fixed_code = generate_deterministic_sre_fix(target_file_path, "")
+        if not fixed_code or len(fixed_code) < 50:
+            logger.warning(f"No valid patch generated for {target_file_path}. Aborting PR creation.")
+            return json.dumps({
+                "status": "ERROR",
+                "message": f"No valid AI-computed fix available for {target_file_path}. Human engineering review required."
+            })
 
         commit_payload = {
             "message": f"fix({target_file_path.split('/')[-2]}): resolve production exception via AI agent",

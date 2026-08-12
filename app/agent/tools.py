@@ -220,41 +220,40 @@ def create_github_pr(title: str, body: str, target_file: str = "", patch: str = 
 
         import base64
         
+        # 1. Fetch file SHA directly from main branch (guaranteed 200 OK)
         file_resp = httpx.get(
-            f"https://api.github.com/repos/{github_repo}/contents/{target_file_path}?ref={branch_name}",
+            f"https://api.github.com/repos/{github_repo}/contents/{target_file_path}?ref=main",
             headers=headers,
             timeout=10.0
         )
         
         file_sha = None
-        fixed_code = ""
-        
         if file_resp.status_code == 200:
-            file_info = file_resp.json()
-            file_sha = file_info.get("sha")
-            raw_content = base64.b64decode(file_info.get("content", "")).decode("utf-8")
-            
-            if patch and len(patch) > 50 and ("export async function" in patch or "NextResponse" in patch):
-                fixed_code = patch
+            file_sha = file_resp.json().get("sha")
+
+        fixed_code = patch if (patch and len(patch) > 50 and ("export async function" in patch or "NextResponse" in patch)) else ""
+        if not fixed_code:
+            llm = get_llm()
+            if llm and file_resp.status_code == 200:
+                try:
+                    raw_content = base64.b64decode(file_resp.json().get("content", "")).decode("utf-8")
+                    prompt = f"Given this TypeScript file ({target_file_path}):\n\n```typescript\n{raw_content}\n```\n\nFix null/undefined exceptions using safe optional chaining. Return ONLY the complete updated TypeScript code."
+                    resp = llm.invoke([SystemMessage(content="You are a senior TypeScript developer AI agent."), HumanMessage(content=prompt)])
+                    content_str = str(resp.content)
+                    if "```typescript" in content_str:
+                        fixed_code = content_str.split("```typescript")[1].split("```")[0].strip()
+                    elif "```" in content_str:
+                        fixed_code = content_str.split("```")[1].split("```")[0].strip()
+                    else:
+                        fixed_code = content_str.strip()
+                except Exception:
+                    fixed_code = patch if patch else ""
             else:
-                llm = get_llm()
-                if llm:
-                    try:
-                        prompt = f"Given this TypeScript file ({target_file_path}):\n\n```typescript\n{raw_content}\n```\n\nFix null/undefined exceptions using safe optional chaining (e.g. body?.items?.[0]?.price || 0, body?.customer?.address?.city || 'UNKNOWN'). Return ONLY the complete updated TypeScript code."
-                        resp = llm.invoke([SystemMessage(content="You are a senior TypeScript developer AI agent."), HumanMessage(content=prompt)])
-                        content_str = str(resp.content)
-                        if "```typescript" in content_str:
-                            fixed_code = content_str.split("```typescript")[1].split("```")[0].strip()
-                        elif "```" in content_str:
-                            fixed_code = content_str.split("```")[1].split("```")[0].strip()
-                        else:
-                            fixed_code = content_str.strip()
-                    except Exception:
-                        fixed_code = patch if patch else raw_content
-                else:
-                    fixed_code = patch if patch else raw_content
-        else:
-            fixed_code = patch if patch else "// Target file not found"
+                fixed_code = patch if patch else ""
+
+        if not fixed_code:
+            from app.agent.orchestrator import generate_deterministic_sre_fix
+            fixed_code = generate_deterministic_sre_fix(target_file_path, "")
 
         commit_payload = {
             "message": f"fix({target_file_path.split('/')[-2]}): resolve production exception via AI agent",
@@ -270,6 +269,13 @@ def create_github_pr(title: str, body: str, target_file: str = "", patch: str = 
             json=commit_payload,
             timeout=10.0
         )
+
+        if commit_resp.status_code not in (200, 201):
+            logger.error(f"GitHub Commit failed ({commit_resp.status_code}): {commit_resp.text}")
+            return json.dumps({
+                "status": "ERROR",
+                "message": f"GitHub commit failed ({commit_resp.status_code}): {commit_resp.text}"
+            })
 
         url = f"https://api.github.com/repos/{github_repo}/pulls"
         data = {
@@ -289,10 +295,8 @@ def create_github_pr(title: str, body: str, target_file: str = "", patch: str = 
             })
         else:
             return json.dumps({
-                "pr_number": 186,
-                "pr_url": f"https://github.com/{github_repo}/pull/186",
-                "status": "OPEN",
-                "message": "Pull Request ready"
+                "status": "ERROR",
+                "message": f"GitHub PR creation failed ({resp.status_code}): {resp.text}"
             })
     except Exception as e:
         logger.error(f"Failed to create GitHub PR: {e}")

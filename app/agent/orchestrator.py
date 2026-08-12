@@ -295,7 +295,6 @@ def _calculate_evidence_confidence(alert_summary: str, rel_path: str, code_conte
 
 def node_fix(state: IncidentState) -> IncidentState:
     """Generate candidate code fix patch dynamically using Groq LLM with retries."""
-    logger.info(f"State [FIXING] incident: {state['incident_id']} (Attempt {state['fix_attempts'] + 1})")
     state["status"] = "FIXING"
     state["step_count"] += 1
     state["fix_attempts"] += 1
@@ -309,6 +308,22 @@ def node_fix(state: IncidentState) -> IncidentState:
         for attempt in range(1, 4):
             try:
                 logger.info(f"LLM fix generation attempt {attempt}/3 for {rel_path}")
+                # Inject RLHF Knowledge Base Feedback
+                import os, json
+                kb_path = "knowledge_base.json"
+                kb_feedback = ""
+                if os.path.exists(kb_path):
+                    try:
+                        with open(kb_path, "r") as f:
+                            kb = json.load(f)
+                            if kb:
+                                feedbacks = [k["feedback"] for k in kb[-3:]]
+                                kb_feedback = "\n".join([f"- {fb}" for fb in feedbacks])
+                    except Exception:
+                        pass
+                        
+                rlhf_instruction = f"5. CRITICAL TEAM FEEDBACK (RLHF): Ensure your fix follows this past PR review feedback:\n{kb_feedback}\n" if kb_feedback else ""
+
                 prompt = (
                     f"You are a senior Site Reliability & TypeScript Engineer AI agent.\n"
                     f"Fix the production error in `{rel_path}`: '{alert_summary}'\n\n"
@@ -317,7 +332,8 @@ def node_fix(state: IncidentState) -> IncidentState:
                     f"1. Fix ONLY the primary target file `{rel_path}`.\n"
                     f"2. Modify all unsafe property dereferences (e.g. `taxInfo.amount`, `body.items[0].price`, `body.customer.address.city`) to use safe optional chaining and default fallbacks (e.g. `taxInfo?.amount?.toFixed(2) || '0.00'`).\n"
                     f"3. Do NOT output unified diffs, git diff markers (`@@ -... @@`), or code from related modules.\n"
-                    f"4. Output ONLY the complete updated TypeScript code for `{rel_path}` inside a ```typescript ... ``` block without any prose or diff markers."
+                    f"4. Output ONLY the complete updated TypeScript code for `{rel_path}` inside a ```typescript ... ``` block without any prose or diff markers.\n"
+                    f"{rlhf_instruction}"
                 )
                 resp = llm.invoke([SystemMessage(content="You are an elite TypeScript SRE AI agent."), HumanMessage(content=prompt)])
                 content_str = str(resp.content).strip()

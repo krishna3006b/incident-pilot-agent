@@ -11,6 +11,8 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.db.supabase import get_incidents, get_incident_by_id, create_incident, update_incident_status
 from app.agent.orchestrator import run_incident_orchestrator
+import os
+from datetime import datetime, timezone
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("incidentpilot")
@@ -175,6 +177,59 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
         "incident_id": incident_id,
         "message": "Slack alert parsed and AI Agent dispatched."
     }
+
+@app.get("/api/v1/incidents/stream_all")
+async def stream_all_incidents():
+    """SSE streaming endpoint for all incidents to replace 2-second polling."""
+    async def event_generator():
+        last_data = None
+        while True:
+            current_data = get_incidents()
+            if current_data != last_data:
+                yield f"data: {json.dumps(current_data)}\n\n"
+                last_data = current_data
+            await asyncio.sleep(2)
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.post("/api/v1/webhooks/github")
+async def handle_github_webhook(request: Request):
+    """
+    Listens for GitHub pull_request_review_comment events.
+    Updates knowledge base and incident status for RLHF.
+    """
+    body = await request.json()
+    action = body.get("action")
+    
+    if action == "created" and "comment" in body and "pull_request" in body:
+        comment_body = body["comment"]["body"]
+        pr_url = body["pull_request"]["html_url"]
+        
+        incidents = get_incidents()
+        matched_incident = next((inc for inc in incidents if inc.get("pr_url") == pr_url), None)
+        
+        if matched_incident:
+            # 1. Update Incident Status
+            update_incident_status(matched_incident["id"], "CHANGES_REQUESTED", {"feedback": comment_body})
+            logger.info(f"RLHF Feedback received for incident {matched_incident['id']}: {comment_body}")
+            
+            # 2. Append to Knowledge Base
+            kb_path = "knowledge_base.json"
+            kb = []
+            if os.path.exists(kb_path):
+                try:
+                    with open(kb_path, "r") as f:
+                        kb = json.load(f)
+                except Exception:
+                    pass
+            kb.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "incident": matched_incident["title"],
+                "feedback": comment_body
+            })
+            with open(kb_path, "w") as f:
+                json.dump(kb, f, indent=2)
+                
+    return {"status": "OK"}
 
 @app.get("/api/v1/incidents/{incident_id}/stream")
 async def stream_incident_updates(incident_id: str):

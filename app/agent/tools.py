@@ -147,6 +147,20 @@ def run_tests_in_sandbox(test_command: str, candidate_patch: str) -> str:
     return json.dumps(res, indent=2)
 
 @tool
+def get_llm():
+    if settings.GROQ_API_KEY:
+        try:
+            from langchain_groq import ChatGroq
+            return ChatGroq(
+                groq_api_key=settings.GROQ_API_KEY,
+                model_name="llama-3.3-70b-versatile",
+                temperature=0.1
+            )
+        except Exception as e:
+            logger.warning(f"Groq LLM init in tools failed: {e}")
+    return None
+
+@tool
 def create_github_pr(title: str, body: str, patch: str) -> str:
     """
     Create a GitHub pull request with the verified candidate code fix.
@@ -215,7 +229,7 @@ def create_github_pr(title: str, body: str, patch: str) -> str:
                     if patch and "export async function" in patch:
                         fixed_code = patch
                     else:
-                        llm = initialize_llm()
+                        llm = get_llm()
                         if llm:
                             try:
                                 prompt = f"Given this TypeScript file ({target_file_path}):\n\n```typescript\n{raw_content}\n```\n\nFix null/undefined exceptions. Return ONLY the complete updated TypeScript code."

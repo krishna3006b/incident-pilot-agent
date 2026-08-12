@@ -39,10 +39,24 @@ def initialize_llm():
             return ChatGroq(
                 groq_api_key=settings.GROQ_API_KEY,
                 model_name="llama-3.3-70b-versatile",
-                temperature=0.1
-            ).bind_tools(ALL_AGENT_TOOLS)
+                temperature=0.1,
+                max_tokens=2048
+            )
         except Exception as e:
             logger.warning(f"Groq LLM init failed: {e}. Using deterministic fallback engine.")
+    return None
+
+def initialize_llm_with_tools():
+    if settings.GROQ_API_KEY and ChatGroq:
+        try:
+            return ChatGroq(
+                groq_api_key=settings.GROQ_API_KEY,
+                model_name="llama-3.3-70b-versatile",
+                temperature=0.1,
+                max_tokens=2048
+            ).bind_tools(ALL_AGENT_TOOLS)
+        except Exception as e:
+            logger.warning(f"Groq LLM init with tools failed: {e}")
     return None
 
 # State Machine Nodes
@@ -68,16 +82,15 @@ def node_investigate(state: IncidentState) -> IncidentState:
     target_file = "target_app/src/app/api/checkout/route.ts"
     file_content = read_file.invoke({"repository": state["service_name"], "filepath": target_file})
     
-    state["logs"] = f"Error in {state['service_name']}: {state['alert_summary']}\nSearch Results: {code_results}"
-    state["trace"] = json.dumps({
-        "service": state["service_name"],
-        "error": state["alert_summary"],
-        "file": target_file,
-        "content_preview": file_content[:300]
-    }, indent=2)
+    # Analyze distributed trace waterfall
+    trace_data = get_distributed_trace.invoke({"trace_id": "tr_8f99a012b"})
+    
+    state["logs"] = code_results
+    state["trace"] = trace_data
     
     update_incident_status(state["incident_id"], "INVESTIGATING", {
-        "summary": f"Investigating error signature '{state['alert_summary']}' in {state['service_name']}"
+        "logs": state["logs"],
+        "trace": state["trace"]
     })
     return state
 
@@ -171,10 +184,11 @@ def node_fix(state: IncidentState) -> IncidentState:
                 f"Fix the production error in `{rel_path}`: '{alert_summary}'\n\n"
                 f"Original Source Code:\n```typescript\n{code_content}\n```\n\n"
                 f"STRICT FIX GUIDELINES:\n"
-                f"1. Keep the complete file structure intact (imports, POST export, try/catch block, and Slack alert error handler in catch).\n"
-                f"2. Use safe optional chaining or default fallback values (e.g. `const city = body?.customer?.address?.city || 'UNKNOWN';`) so property access never throws TypeError.\n"
-                f"3. Do NOT throw uncaught errors. Ensure the route safely returns NextResponse.json.\n"
-                f"4. Output ONLY valid TypeScript source code. No explanations, no markdown comments."
+                f"1. Output FULL, VALID, COMPLETE TypeScript code for `{rel_path}`.\n"
+                f"2. Keep imports, POST export signature, try/catch block, and Slack alert error handler in catch.\n"
+                f"3. Use safe optional chaining or default fallback values (e.g. `const city = body?.customer?.address?.city || 'UNKNOWN';`) so property access never throws TypeError.\n"
+                f"4. Do NOT throw uncaught errors. Ensure the route safely returns NextResponse.json.\n"
+                f"5. Output ONLY valid code inside ```typescript ... ``` block without any introductory or concluding prose."
             )
             resp = llm.invoke([SystemMessage(content="You are an elite TypeScript SRE AI agent."), HumanMessage(content=prompt)])
             content_str = str(resp.content).strip()

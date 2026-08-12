@@ -202,6 +202,7 @@ async def handle_github_webhook(request: Request):
     body = await request.json()
     action = body.get("action")
     
+    # 1. Handle PR Comment Feedback
     if action == "created" and "comment" in body and "pull_request" in body:
         comment_body = body["comment"]["body"]
         pr_url = body["pull_request"]["html_url"]
@@ -210,11 +211,9 @@ async def handle_github_webhook(request: Request):
         matched_incident = next((inc for inc in incidents if inc.get("pr_url") == pr_url), None)
         
         if matched_incident:
-            # 1. Update Incident Status
             update_incident_status(matched_incident["id"], "CHANGES_REQUESTED")
-            logger.info(f"RLHF Feedback received for incident {matched_incident['id']}: {comment_body}")
+            logger.info(f"Verified Human Feedback received for incident {matched_incident['id']}: {comment_body}")
             
-            # 2. Append to Knowledge Base
             kb_path = "knowledge_base.json"
             kb = []
             if os.path.exists(kb_path):
@@ -230,6 +229,15 @@ async def handle_github_webhook(request: Request):
             })
             with open(kb_path, "w") as f:
                 json.dump(kb, f, indent=2)
+
+    # 2. Handle PR Merge Event -> Set Status to RESOLVED
+    elif action == "closed" and body.get("pull_request", {}).get("merged") is True:
+        pr_url = body["pull_request"]["html_url"]
+        incidents = get_incidents()
+        matched_incident = next((inc for inc in incidents if inc.get("pr_url") == pr_url), None)
+        if matched_incident:
+            update_incident_status(matched_incident["id"], "RESOLVED")
+            logger.info(f"PR Merged! Incident {matched_incident['id']} status updated to RESOLVED.")
                 
     return {"status": "OK"}
 

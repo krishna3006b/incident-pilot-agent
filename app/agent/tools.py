@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import logging
 import httpx
 from typing import Dict, Any, List
@@ -153,7 +154,7 @@ def create_github_pr(title: str, body: str, patch: str) -> str:
     Otherwise returns a simulated PR URL.
     """
     github_token = os.getenv("GITHUB_TOKEN")
-    github_repo = os.getenv("GITHUB_REPO") # e.g. "krishna3006b/payment-service"
+    github_repo = os.getenv("GITHUB_REPO") # e.g. "krishna3006b/ordering-system"
 
     if github_token and github_repo:
         try:
@@ -161,12 +162,33 @@ def create_github_pr(title: str, body: str, patch: str) -> str:
                 "Authorization": f"Bearer {github_token}",
                 "Accept": "application/vnd.github.v3+json"
             }
-            # GitHub API endpoint to create PR
+            # 1. Fetch repo details to get default branch (main/master)
+            repo_info = httpx.get(f"https://api.github.com/repos/{github_repo}", headers=headers, timeout=10.0).json()
+            default_branch = repo_info.get("default_branch", "main")
+            
+            # 2. Get latest commit SHA of default branch
+            ref_resp = httpx.get(f"https://api.github.com/repos/{github_repo}/git/ref/heads/{default_branch}", headers=headers, timeout=10.0).json()
+            sha = ref_resp.get("object", {}).get("sha")
+            
+            branch_name = f"fix/incident-autofix-{int(time.time())}"
+            
+            if sha:
+                # 3. Create a new branch for the fix
+                httpx.post(
+                    f"https://api.github.com/repos/{github_repo}/git/refs",
+                    json={"ref": f"refs/heads/{branch_name}", "sha": sha},
+                    headers=headers,
+                    timeout=10.0
+                )
+            else:
+                branch_name = default_branch
+
+            # 4. Create Pull Request
             url = f"https://api.github.com/repos/{github_repo}/pulls"
             data = {
                 "title": title,
-                "head": "fix/incident-autofix",
-                "base": "main",
+                "head": branch_name,
+                "base": default_branch,
                 "body": body
             }
             resp = httpx.post(url, json=data, headers=headers, timeout=10.0)
@@ -178,12 +200,14 @@ def create_github_pr(title: str, body: str, patch: str) -> str:
                     "status": "OPEN",
                     "message": "Real GitHub Pull Request created successfully!"
                 }, indent=2)
+            else:
+                logger.warning(f"GitHub PR creation response ({resp.status_code}): {resp.text}")
         except Exception as e:
             logger.warning(f"Failed to create real GitHub PR ({e}). Falling back to simulation.")
 
     return json.dumps({
-        "pr_number": 184,
-        "pr_url": f"https://github.com/{github_repo or 'krishna3006b/payment-service'}/pull/184",
+        "pr_number": 186,
+        "pr_url": f"https://github.com/{github_repo or 'krishna3006b/ordering-system'}/pull/186",
         "status": "OPEN",
         "reviewers_assigned": ["lead-dev@company.com"],
         "message": "PR created successfully. Waiting for human approval."

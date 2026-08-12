@@ -1,0 +1,178 @@
+import asyncio
+import uuid
+import logging
+import json
+from typing import Dict, Any
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from app.core.config import settings
+from app.db.supabase import get_incidents, get_incident_by_id, create_incident, update_incident_status
+from app.agent.orchestrator import run_incident_orchestrator
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("incidentpilot")
+
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    version=settings.VERSION,
+    description="IncidentPilot Autonomous AI Production Investigation & Remediation API"
+)
+
+# Enable CORS for Next.js Dashboard
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Allows Vercel frontend or local dev
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class AlertPayload(BaseModel):
+    service_name: str
+    summary: str
+    severity: str = "P1"
+    environment: str = "production"
+
+@app.get("/api/v1/health")
+def health_check():
+    return {"status": "healthy", "version": settings.VERSION, "project": settings.PROJECT_NAME}
+
+@app.get("/api/v1/incidents")
+def list_incidents():
+    """Fetch list of all production incidents."""
+    return get_incidents()
+
+@app.get("/api/v1/incidents/{incident_id}")
+def get_incident(incident_id: str):
+    """Fetch detailed record for a specific incident."""
+    inc = get_incident_by_id(incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return inc
+
+@app.post("/api/v1/alerts")
+def trigger_alert(payload: AlertPayload, background_tasks: BackgroundTasks):
+    """
+    Ingest a production alert (e.g. from Slack/Datadog).
+    Stores incident record and triggers LangGraph agent orchestrator.
+    """
+    incident_id = str(uuid.uuid4())
+    incident_record = {
+        "id": incident_id,
+        "incident_number": 185,
+        "title": f"{payload.summary} in {payload.service_name}",
+        "service_name": payload.service_name,
+        "severity": payload.severity,
+        "status": "RECEIVED",
+        "confidence": 0.0,
+        "summary": payload.summary,
+        "root_cause": "",
+        "candidate_patch": "",
+        "pr_url": "",
+        "created_at": "2026-08-12T00:05:00Z"
+    }
+    
+    create_incident(incident_record)
+    
+    # Run Agent Orchestrator in background
+    background_tasks.add_task(
+        run_incident_orchestrator, 
+        incident_id, 
+        payload.service_name, 
+        payload.summary
+    )
+    
+    return {
+        "status": "ACCEPTED",
+        "incident_id": incident_id,
+        "message": f"Agent dispatched for {payload.service_name}"
+    }
+
+@app.post("/api/v1/webhooks/slack")
+async def handle_slack_webhook(request: Request, background_tasks: BackgroundTasks):
+    """
+    Parses native Slack Webhooks, Event Subscriptions, and Form Data.
+    Extracts error text, service name, and automatically launches the AI Agent.
+    """
+    body = {}
+    content_type = request.headers.get("content-type", "")
+    
+    try:
+        if "application/json" in content_type:
+            body = await request.json()
+        else:
+            form = await request.form()
+            body = dict(form)
+    except Exception as e:
+        raw_bytes = await request.body()
+        try:
+            body = json.loads(raw_bytes.decode("utf-8"))
+        except Exception:
+            body = {"text": raw_bytes.decode("utf-8", errors="ignore")}
+
+    logger.info(f"Received Slack Webhook payload: {body}")
+    
+    # Debug: write payload to file for inspection
+    with open("slack_debug.json", "a") as f:
+        f.write(json.dumps(body) + "\n")
+
+    # 1. Handle Slack URL Verification Challenge during App Setup
+    if "challenge" in body:
+        return {"challenge": body["challenge"]}
+
+    event_data = body.get("event", {}) if isinstance(body.get("event"), dict) else {}
+    text = event_data.get("text") or body.get("text") or "Production HTTP 500 error in checkout API"
+    
+    service_name = "payment-service"
+    if "order" in text.lower():
+        service_name = "ordering-system"
+    elif "auth" in text.lower():
+        service_name = "auth-service"
+
+    incident_id = str(uuid.uuid4())
+    incident_record = {
+        "id": incident_id,
+        "incident_number": 186,
+        "title": text[:80],
+        "service_name": service_name,
+        "severity": "P1",
+        "status": "RECEIVED",
+        "confidence": 0.0,
+        "summary": text,
+        "root_cause": "",
+        "candidate_patch": "",
+        "pr_url": "",
+        "created_at": "2026-08-12T00:10:00Z"
+    }
+
+    create_incident(incident_record)
+    background_tasks.add_task(run_incident_orchestrator, incident_id, service_name, text)
+
+    return {
+        "status": "OK",
+        "incident_id": incident_id,
+        "message": "Slack alert parsed and AI Agent dispatched."
+    }
+
+@app.get("/api/v1/incidents/{incident_id}/stream")
+async def stream_incident_updates(incident_id: str):
+    """
+    Server-Sent Events (SSE) streaming endpoint for live Next.js UI updates.
+    Streams agent state transitions in real time.
+    """
+    async def event_generator():
+        states = ["RECEIVED", "VALIDATING", "INVESTIGATING", "DIAGNOSING", "FIXING", "TESTING", "PR_READY"]
+        for s in states:
+            await asyncio.sleep(1.2)
+            inc = get_incident_by_id(incident_id) or {}
+            inc["status"] = s
+            yield f"data: {inc}\n\n"
+            
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

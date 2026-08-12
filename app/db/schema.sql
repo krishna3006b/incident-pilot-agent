@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS incidents (
 -- EVIDENCE (first-class evidence objects with IDs)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS evidence (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              TEXT PRIMARY KEY,
     incident_id     UUID REFERENCES incidents(id) ON DELETE CASCADE,
     type            TEXT NOT NULL,  -- stack_trace, commit, code_chunk, historical, runbook, dependency
     source          TEXT,           -- slack_webhook, pgvector_rag, github_api, resolution_memory

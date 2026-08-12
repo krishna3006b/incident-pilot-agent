@@ -5,6 +5,8 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 from app.agent.knowledge_service import knowledge_service
 
+logger = logging.getLogger(__name__)
+
 @dataclass
 class EvidenceItem:
     id: str
@@ -141,7 +143,7 @@ class ContextPacketBuilder:
         # Sort evidence items by relevance score descending
         evidence_list.sort(key=lambda x: x.relevance_score, reverse=True)
 
-        return ContextPacket(
+        packet = ContextPacket(
             incident_id=incident_id,
             service_name=service_name,
             severity="P1",
@@ -152,6 +154,9 @@ class ContextPacketBuilder:
             knowledge_version=knowledge_version,
             evidence_items=evidence_list
         )
+
+        logger.info(f"Assembled ContextPacket for incident {incident_id}:\n{packet.to_markdown()}")
+        return packet
 
 # Singleton Instance
 packet_builder = ContextPacketBuilder()

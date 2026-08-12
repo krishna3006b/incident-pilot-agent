@@ -26,6 +26,8 @@ class IncidentState(TypedDict):
     trace: str
     root_cause: str
     candidate_patch: str
+    fixed_code: Optional[str]
+    confidence: Optional[float]
     test_results: str
     pr_url: str
     step_count: int
@@ -339,7 +341,7 @@ def node_test(state: IncidentState) -> IncidentState:
     state["status"] = "TESTING"
     state["step_count"] += 1
     
-    patch_code = state.get("fixed_code", "")
+    patch_code = state.get("fixed_code") or state.get("candidate_patch", "")
     if not patch_code or "NO_AUTOMATED_FIX" in patch_code:
         state["test_results"] = "FAIL: AI model was unable to generate a valid fix patch. Human engineering review required."
         logger.warning(f"Patch validation FAILED: No valid patch code generated for incident {state['incident_id']}")
@@ -427,8 +429,7 @@ def node_failed(state: IncidentState) -> IncidentState:
     state["status"] = "FAILED"
     state["step_count"] += 1
     update_incident_status(state["incident_id"], "FAILED", {
-        "candidate_patch": state.get("candidate_patch", "// Fix generation failed."),
-        "test_results": state.get("test_results", "AI model was unable to compute a verified solution.")
+        "candidate_patch": state.get("candidate_patch", "// Fix generation failed.")
     })
     return state
 

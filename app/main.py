@@ -87,7 +87,7 @@ def trigger_alert(payload: AlertPayload, background_tasks: BackgroundTasks):
         "root_cause": "",
         "candidate_patch": "",
         "pr_url": "",
-        "created_at": "2026-08-12T00:05:00Z"
+        "created_at": datetime.now(timezone.utc).isoformat()
     }
     
     create_incident(incident_record)

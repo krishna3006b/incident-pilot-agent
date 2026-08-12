@@ -103,48 +103,65 @@ def initialize_llm():
 
 def find_and_read_target_code(alert_summary: str):
     import re
-    rel_path = "src/app/api/checkout/route.ts"
-    path_match = re.search(r'(src/app/api/[\w/]+\.ts)', alert_summary)
-    if path_match:
-        rel_path = path_match.group(1)
+    # Extract all file paths from alert summary / stack trace
+    matches = re.findall(r'(src/[\w/-]+\.ts)', alert_summary)
+    
+    if matches:
+        # Primary target is the first file mentioned in stack trace
+        rel_path = matches[0]
     else:
         text = alert_summary.lower()
-        if "discount" in text or "price" in text:
+        if "shipping" in text or "country" in text:
+            rel_path = "src/app/api/shipping/calculate/route.ts"
+        elif "process" in text or "tax" in text or "order" in text:
+            rel_path = "src/lib/payment-processor.ts"
+        elif "discount" in text or "price" in text:
             rel_path = "src/app/api/discount/route.ts"
         elif "inventory" in text or "stock" in text:
             rel_path = "src/app/api/inventory/route.ts"
         elif "user" in text or "profile" in text:
             rel_path = "src/app/api/user/profile/route.ts"
+        else:
+            rel_path = "src/app/api/checkout/route.ts"
             
-    # Fetch file directly from GitHub repository
     github_token = os.getenv("GITHUB_TOKEN")
     github_repo = os.getenv("GITHUB_REPO", "krishna3006b/ordering-system")
     
-    if github_token and github_repo:
-        try:
-            headers = {
-                "Authorization": f"Bearer {github_token}",
-                "Accept": "application/vnd.github.v3+json"
-            }
-            resp = httpx.get(f"https://api.github.com/repos/{github_repo}/contents/{rel_path}", headers=headers, timeout=10.0)
-            if resp.status_code == 200:
-                import base64
-                content = base64.b64decode(resp.json().get("content", "")).decode("utf-8")
-                return rel_path, content
-        except Exception as e:
-            logger.warning(f"Failed to fetch {rel_path} from GitHub: {e}")
+    def fetch_file_content(path: str) -> str:
+        if github_token and github_repo:
+            try:
+                headers = {
+                    "Authorization": f"Bearer {github_token}",
+                    "Accept": "application/vnd.github.v3+json"
+                }
+                resp = httpx.get(f"https://api.github.com/repos/{github_repo}/contents/{path}", headers=headers, timeout=10.0)
+                if resp.status_code == 200:
+                    import base64
+                    return base64.b64decode(resp.json().get("content", "")).decode("utf-8")
+            except Exception as e:
+                logger.warning(f"Failed to fetch {path} from GitHub: {e}")
+                
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+        full_path = os.path.join(base_dir, "target_app", path)
+        if os.path.exists(full_path):
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                pass
+        return DEFAULT_TARGET_TEMPLATES.get(path, "")
+
+    primary_content = fetch_file_content(rel_path)
+    
+    # If multiple files were matched in stack trace (e.g. payment-processor.ts and route.ts), combine them for full context
+    combined_content = f"// Primary Target File: {rel_path}\n{primary_content}"
+    unique_paths = list(dict.fromkeys(matches))
+    for extra_path in unique_paths[1:]:
+        extra_code = fetch_file_content(extra_path)
+        if extra_code:
+            combined_content += f"\n\n// Related Module File: {extra_path}\n{extra_code}"
             
-    # Fallback to local disk if running locally
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-    full_path = os.path.join(base_dir, "target_app", rel_path)
-    if os.path.exists(full_path):
-        try:
-            with open(full_path, "r", encoding="utf-8") as f:
-                return rel_path, f.read()
-        except Exception:
-            pass
-            
-    return rel_path, DEFAULT_TARGET_TEMPLATES.get(rel_path, DEFAULT_TARGET_TEMPLATES["src/app/api/checkout/route.ts"])
+    return rel_path, combined_content
 
 # State Machine Nodes
 def node_validate(state: IncidentState) -> IncidentState:

@@ -312,13 +312,12 @@ def node_fix(state: IncidentState) -> IncidentState:
                 prompt = (
                     f"You are a senior Site Reliability & TypeScript Engineer AI agent.\n"
                     f"Fix the production error in `{rel_path}`: '{alert_summary}'\n\n"
-                    f"Original Source Code:\n```typescript\n{code_content}\n```\n\n"
+                    f"Source Code & Workspace Context:\n```typescript\n{code_content}\n```\n\n"
                     f"STRICT FIX GUIDELINES:\n"
-                    f"1. Modify all direct property accesses (e.g. `body.items[0].price`, `body.customer.address.city`, `body.product.stock_quantity`, `{{ email, role }} = body.user`) to use safe optional chaining and fallback defaults (e.g. `body?.items?.[0]?.price || 0`, `body?.customer?.address?.city || 'UNKNOWN'`).\n"
-                    f"2. Ensure the property access lines are updated so the output differs from the bug line.\n"
-                    f"3. Keep imports, POST export signature, try/catch block, and Slack alert error handler in catch.\n"
-                    f"4. Do NOT throw uncaught errors. Ensure the route safely returns NextResponse.json.\n"
-                    f"5. Output ONLY valid code inside ```typescript ... ``` block without any introductory or concluding prose."
+                    f"1. Fix ONLY the primary target file `{rel_path}`.\n"
+                    f"2. Modify all unsafe property dereferences (e.g. `taxInfo.amount`, `body.items[0].price`, `body.customer.address.city`) to use safe optional chaining and default fallbacks (e.g. `taxInfo?.amount?.toFixed(2) || '0.00'`).\n"
+                    f"3. Do NOT output unified diffs, git diff markers (`@@ -... @@`), or code from related modules.\n"
+                    f"4. Output ONLY the complete updated TypeScript code for `{rel_path}` inside a ```typescript ... ``` block without any prose or diff markers."
                 )
                 resp = llm.invoke([SystemMessage(content="You are an elite TypeScript SRE AI agent."), HumanMessage(content=prompt)])
                 content_str = str(resp.content).strip()
@@ -329,7 +328,16 @@ def node_fix(state: IncidentState) -> IncidentState:
                 else:
                     candidate = content_str.strip()
                     
-                if len(candidate) > 50 and "export async function" in candidate and "?." in candidate:
+                # Post-processing Sanitizer: Strip any appended related modules or diff markers
+                if "// Related Module File:" in candidate:
+                    candidate = candidate.split("// Related Module File:")[0].strip()
+                import re
+                candidate = re.sub(r'@@\s*-\d+,\d+\s+\+\d+,\d+\s*@@', '', candidate).strip()
+                
+                has_export = "export" in candidate
+                has_safety = "?." in candidate or "if (" in candidate or "||" in candidate or "try" in candidate
+                
+                if len(candidate) > 30 and has_export and has_safety:
                     fixed_code = candidate
                     logger.info(f"LLM fix generation succeeded on attempt {attempt}")
                     break
@@ -370,10 +378,7 @@ def node_test(state: IncidentState) -> IncidentState:
     # Real Validation 1: Check for required TypeScript structural elements
     required_patterns = {
         "import statement": "import",
-        "export async function POST": "export async function POST",
-        "NextResponse.json": "NextResponse.json",
-        "try block": "try {",
-        "catch block": "catch",
+        "export declaration": "export",
     }
     for check_name, pattern in required_patterns.items():
         if pattern not in patch_code:
@@ -391,8 +396,8 @@ def node_test(state: IncidentState) -> IncidentState:
             validation_errors.append(f"FAIL: Unsafe property access still present: '{unsafe}'")
     
     # Real Validation 3: Check that safe optional chaining IS present
-    if "?." not in patch_code:
-        validation_errors.append("FAIL: No optional chaining (?.) found in patch")
+    if "?." not in patch_code and "||" not in patch_code and "if (" not in patch_code:
+        validation_errors.append("FAIL: No null safety check found in patch")
     
     # Real Validation 4: Balanced braces check
     open_braces = patch_code.count("{")

@@ -184,7 +184,11 @@ def create_github_pr(title: str, body: str, patch: str) -> str:
                 # 4. Commit candidate patch to the new branch via GitHub Contents API
                 target_file_path = "src/app/api/checkout/route.ts"
                 text_meta = (title + " " + body).lower()
-                if "discount" in text_meta or "price" in text_meta:
+                import re
+                path_match = re.search(r'(src/app/api/[\w/]+\.ts)', text_meta)
+                if path_match:
+                    target_file_path = path_match.group(1)
+                elif "discount" in text_meta or "price" in text_meta:
                     target_file_path = "src/app/api/discount/route.ts"
                 elif "inventory" in text_meta or "stock" in text_meta:
                     target_file_path = "src/app/api/inventory/route.ts"
@@ -231,7 +235,7 @@ def create_github_pr(title: str, body: str, patch: str) -> str:
                     fixed_code = "// Target file not found"
 
                 commit_payload = {
-                    "message": "fix(checkout): add null check for customer address",
+                    "message": f"fix({target_file_path.split('/')[-2]}): resolve production exception via AI agent",
                     "content": base64.b64encode(fixed_code.encode("utf-8")).decode("utf-8"),
                     "branch": branch_name
                 }

@@ -209,7 +209,7 @@ async def handle_github_webhook(request: Request):
         
         if matched_incident:
             # 1. Update Incident Status
-            update_incident_status(matched_incident["id"], "CHANGES_REQUESTED", {"feedback": comment_body})
+            update_incident_status(matched_incident["id"], "CHANGES_REQUESTED")
             logger.info(f"RLHF Feedback received for incident {matched_incident['id']}: {comment_body}")
             
             # 2. Append to Knowledge Base

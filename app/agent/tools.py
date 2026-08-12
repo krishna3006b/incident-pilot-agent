@@ -183,18 +183,37 @@ def create_github_pr(title: str, body: str, patch: str) -> str:
                 
                 # 4. Commit candidate patch to the new branch via GitHub Contents API
                 target_file_path = "src/app/api/checkout/route.ts"
+                import base64
                 
-                # Check if file exists on target branch to get SHA
+                # Check if file exists on target branch to get SHA & original content
                 file_resp = httpx.get(
                     f"https://api.github.com/repos/{github_repo}/contents/{target_file_path}?ref={branch_name}",
                     headers=headers,
                     timeout=10.0
                 )
-                file_sha = file_resp.json().get("sha") if file_resp.status_code == 200 else None
                 
-                # Fixed code content
-                import base64
-                fixed_code = """import { NextResponse } from 'next/server';
+                file_sha = None
+                fixed_code = ""
+                
+                if file_resp.status_code == 200:
+                    file_info = file_resp.json()
+                    file_sha = file_info.get("sha")
+                    raw_content = base64.b64decode(file_info.get("content", "")).decode("utf-8")
+                    
+                    # Apply fix directly to real GitHub file content
+                    if "body.customer.address.city" in raw_content:
+                        fixed_code = raw_content.replace(
+                            "const city = body.customer.address.city;",
+                            "// Fix applied by IncidentPilot AI Agent: Null-check customer address\n    const city = body?.customer?.address?.city || 'UNKNOWN';"
+                        )
+                    else:
+                        fixed_code = raw_content.replace(
+                            "body.customer.address.city",
+                            "body?.customer?.address?.city || 'UNKNOWN'"
+                        )
+                else:
+                    # Fallback file template
+                    fixed_code = """import { NextResponse } from 'next/server';
 
 export async function POST(req: Request) {
   try {
@@ -219,7 +238,7 @@ export async function POST(req: Request) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            text: `🚨 *PRODUCTION ALERT: payment-service HTTP 500 Spike!*\n*Error:* \`${errorMessage}\`\n*Environment:* production\n*Deployment:* v1.8.3`
+            text: `🚨 *PRODUCTION ALERT: payment-service HTTP 500 Spike!*\n*Error:* \`${errorMessage}\` \n*Environment:* production\n*Deployment:* v1.8.3`
           })
         });
       } catch (e) {
@@ -234,6 +253,7 @@ export async function POST(req: Request) {
   }
 }
 """
+
                 commit_payload = {
                     "message": "fix(checkout): add null check for customer address",
                     "content": base64.b64encode(fixed_code.encode("utf-8")).decode("utf-8"),

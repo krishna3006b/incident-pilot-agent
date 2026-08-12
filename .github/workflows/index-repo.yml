@@ -18,8 +18,16 @@ jobs:
   index:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout Agent Code
         uses: actions/checkout@v4
+        with:
+          path: agent_code
+
+      - name: Checkout Target Repository (ordering-system)
+        uses: actions/checkout@v4
+        with:
+          repository: 'krishna3006b/ordering-system'
+          path: target_repo
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -29,10 +37,11 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt sentence-transformers
+          pip install -r agent_code/requirements.txt sentence-transformers
 
-      - name: Run Repository Indexer
+      - name: Run Repository Indexer on Target Repo
         env:
+          PYTHONPATH: agent_code
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
@@ -40,7 +49,7 @@ jobs:
           from app.agent.indexer import RepositoryIndexer
           repo_id = '${{ github.event.inputs.repository_id }}' if '${{ github.event.inputs.repository_id }}' else 'ordering-system'
           commit_sha = '${{ github.event.inputs.commit_sha }}' if '${{ github.event.inputs.commit_sha }}' else 'HEAD'
-          indexer = RepositoryIndexer('.', repo_id, commit_sha)
+          indexer = RepositoryIndexer('target_repo', repo_id, commit_sha)
           res = indexer.index_repository()
-          print(f'Indexing completed: {res}')
+          print(f'Indexing completed for target repository: {res}')
           "

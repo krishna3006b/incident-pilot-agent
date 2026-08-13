@@ -10,8 +10,11 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Target Repository
         uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.target_repo }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

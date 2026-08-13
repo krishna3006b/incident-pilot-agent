@@ -58,8 +58,18 @@ def node_test(state: IncidentState) -> IncidentState:
         if callback_url:
             callback_url = f"{callback_url}/api/v1/webhooks/sandbox-result"
             
+        from app.db.supabase import get_incident_by_id, _get_client
+        incident = get_incident_by_id(state["incident_id"])
+        target_repo = ""
+        if incident:
+            repo_res = _get_client().table("repository_metadata").select("*").eq("name", incident.get("service_name", "")).execute()
+            if repo_res.data:
+                repo_url = repo_res.data[0].get("repo_url", "")
+                target_repo = repo_url.replace("https://github.com/", "").replace(".git", "")
+            
         sandbox_run_id = trigger_sandbox_test(
             incident_id=state["incident_id"],
+            target_repo=target_repo,
             target_file=rel_path,
             patch_code=patch_code,
             callback_url=callback_url,

@@ -77,7 +77,7 @@ def find_and_read_target_code(alert_summary: str) -> Tuple[str, str]:
 
     return rel_path, combined_content
 
-def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, target_branch: str = "main", callback_url: str = "", setup_cmd: str = "", build_cmd: str = "", test_cmd: str = "") -> str:
+def trigger_sandbox_test(incident_id: str, target_repo: str, target_file: str, patch_code: str, target_branch: str = "main", callback_url: str = "", setup_cmd: str = "", build_cmd: str = "", test_cmd: str = "") -> str:
     """Trigger GitHub Actions sandbox-test.yml via repository_dispatch on agent repo and track the run."""
     import uuid
     from datetime import datetime, timezone
@@ -113,6 +113,7 @@ def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, ta
                 "client_payload": {
                     "incident_id": incident_id,
                     "sandbox_run_id": sandbox_run_id,
+                    "target_repo": target_repo,
                     "target_file": target_file,
                     "target_branch": target_branch,
                     "patch_code": patch_code[:5000],

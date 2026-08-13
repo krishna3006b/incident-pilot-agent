@@ -63,9 +63,9 @@ class RepositoryIndexer:
         self.repo_id = repo_id
         self.commit_sha = commit_sha
 
-    def _extract_edges(self, file_path: str, content: str) -> List[Dict[str, Any]]:
-        """Extract simple dependency edges (imports/requires)."""
-        edges = []
+    def _extract_imports(self, content: str) -> List[str]:
+        """Extract imported module/symbol names."""
+        imports = []
         lines = content.splitlines()
         
         # Matches: import X from 'Y', import 'Y', require('Y'), from Y import X
@@ -75,15 +75,8 @@ class RepositoryIndexer:
             match = import_pattern.search(line)
             if match:
                 target = next(g for g in match.groups() if g is not None)
-                edges.append({
-                    'id': str(uuid.uuid4()),
-                    'repository_id': self.repo_id,
-                    'source_symbol': os.path.basename(file_path),
-                    'target_symbol': target,
-                    'edge_type': 'imports',
-                    'weight': 1.0
-                })
-        return edges
+                imports.append(target.split('/')[-1]) # Use basename for naive matching
+        return imports
 
     # ----- Tree-sitter AST Parsing -----
     def _parse_with_tree_sitter(self, file_path: str, content: str, lang: str) -> List[Dict[str, Any]]:
@@ -342,7 +335,7 @@ class RepositoryIndexer:
             records = []
             for sym in symbols:
                 records.append({
-                    'id': str(uuid.uuid4()),
+                    'id': sym.get('id', str(uuid.uuid4())),
                     'repository_id': self.repo_id,
                     'symbol_name': sym['symbol_name'],
                     'symbol_type': sym['symbol_type'],
@@ -394,10 +387,7 @@ class RepositoryIndexer:
         # Resumable: skip already-processed files
         already_processed = set(self._get_processed_files(job_id))
 
-        processed_files = list(already_processed)
-        failed_files = []
-        all_symbols = []
-        all_edges = []
+        file_contents = {}
 
         for full_path, rel_path in all_file_paths:
             if rel_path in already_processed:
@@ -409,10 +399,11 @@ class RepositoryIndexer:
                     content = f.read()
 
                 symbols = self.parse_ast_symbols(rel_path, content)
+                for sym in symbols:
+                    sym['id'] = str(uuid.uuid4())
                 all_symbols.extend(symbols)
                 
-                edges = self._extract_edges(rel_path, content)
-                all_edges.extend(edges)
+                file_contents[rel_path] = content
                 
                 processed_files.append(rel_path)
 
@@ -425,6 +416,34 @@ class RepositoryIndexer:
 
         # Persist AST symbols to repository_symbols table
         self._persist_symbols(all_symbols)
+        
+        # Build symbol lookup dictionary for resolving edges
+        symbol_lookup = {sym['symbol_name']: sym['id'] for sym in all_symbols}
+        file_to_symbol = {}
+        for sym in all_symbols:
+            if sym['file_path'] not in file_to_symbol:
+                file_to_symbol[sym['file_path']] = sym['id']
+                
+        # Phase 2: Extract and map edges
+        all_edges = []
+        for rel_path, content in file_contents.items():
+            source_id = file_to_symbol.get(rel_path)
+            if not source_id:
+                continue
+                
+            imports = self._extract_imports(content)
+            for target_name in imports:
+                # Remove extension if any to match symbol name
+                clean_target = os.path.splitext(target_name)[0]
+                target_id = symbol_lookup.get(clean_target)
+                if target_id:
+                    all_edges.append({
+                        'id': str(uuid.uuid4()),
+                        'repository_id': self.repo_id,
+                        'source_symbol_id': source_id,
+                        'target_symbol_id': target_id,
+                        'relationship': 'imports'
+                    })
         
         # Persist extracted edges to repository_edges table
         if supabase_client and all_edges:

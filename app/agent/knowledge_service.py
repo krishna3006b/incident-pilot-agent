@@ -2,7 +2,7 @@ import re
 import logging
 from typing import List, Dict, Any, Optional
 from app.db.supabase import supabase_client, IN_MEMORY_KB, get_incidents
-from app.agent.indexer import MiniLMProvider
+from app.services.embedding import generate_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +72,7 @@ class RepositoryKnowledgeService:
         if supabase_client:
             try:
                 # Generate query embedding
-                provider = MiniLMProvider()
-                query_embedding = provider.embed([query])[0]
+                query_embedding = generate_embeddings([query])[0]
                 
                 # Try to resolve repository UUID
                 manifest = self.get_manifest(repo_id)

@@ -160,7 +160,11 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
         except ValueError:
             raise HTTPException(status_code=401, detail="Unauthorized: Invalid Timestamp")
             
-        slack_secret = os.getenv("SLACK_SIGNING_SECRET", "")
+        slack_secret = os.getenv("SLACK_SIGNING_SECRET")
+        if not slack_secret:
+            logger.error("SLACK_SIGNING_SECRET is not configured on the server")
+            raise HTTPException(status_code=500, detail="Server configuration error")
+            
         sig_basestring = f"v0:{slack_timestamp}:{raw_bytes.decode('utf-8')}"
         my_signature = "v0=" + hmac.new(
             slack_secret.encode(),
@@ -277,7 +281,11 @@ async def handle_github_webhook(request: Request):
             logger.warning("Rejected unauthorized GitHub webhook request")
             raise HTTPException(status_code=401, detail="Unauthorized: Missing GitHub Signature")
             
-        github_secret = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+        github_secret = os.getenv("GITHUB_WEBHOOK_SECRET")
+        if not github_secret:
+            logger.error("GITHUB_WEBHOOK_SECRET is not configured on the server")
+            raise HTTPException(status_code=500, detail="Server configuration error")
+            
         expected_signature = "sha256=" + hmac.new(
             github_secret.encode(),
             raw_bytes,

@@ -40,46 +40,7 @@ except ImportError:
     logger.info("tree-sitter package not installed. Using regex-based AST parsing.")
 
 
-# --- Abstract Embedding Provider ---
-class EmbeddingProvider(ABC):
-    @abstractmethod
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        pass
-
-    @abstractmethod
-    def dimension(self) -> int:
-        pass
-
-
-class MiniLMProvider(EmbeddingProvider):
-    """
-    Default embedding provider using lightweight MiniLM (384 dimensions).
-    Includes a fallback deterministic vectorizer if sentence_transformers isn't installed.
-    """
-    def __init__(self):
-        self._model = None
-        try:
-            from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer('all-MiniLM-L6-v2')
-        except Exception:
-            logger.info("sentence_transformers not available, using fallback vectorizer.")
-
-    def dimension(self) -> int:
-        return 384
-
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        if self._model:
-            embeddings = self._model.encode(texts)
-            return embeddings.tolist()
-
-        # Deterministic fallback vector generator for testing/lightweight envs
-        results = []
-        for text in texts:
-            vec = [0.0] * 384
-            for i, char in enumerate(text[:384]):
-                vec[i] = (ord(char) % 100) / 100.0
-            results.append(vec)
-        return results
+from app.services.embedding import generate_embeddings
 
 
 # --- Extension to Language Mapping ---
@@ -96,13 +57,33 @@ class RepositoryIndexer:
         self,
         repo_path: str,
         repo_id: str,
-        commit_sha: str = "HEAD",
-        embedding_provider: Optional[EmbeddingProvider] = None
+        commit_sha: str = "HEAD"
     ):
         self.repo_path = repo_path
         self.repo_id = repo_id
         self.commit_sha = commit_sha
-        self.provider = embedding_provider or MiniLMProvider()
+
+    def _extract_edges(self, file_path: str, content: str) -> List[Dict[str, Any]]:
+        """Extract simple dependency edges (imports/requires)."""
+        edges = []
+        lines = content.splitlines()
+        
+        # Matches: import X from 'Y', import 'Y', require('Y'), from Y import X
+        import_pattern = re.compile(r'(?:import.*?from\s+[\'"](.*?)[\'"])|(?:import\s+[\'"](.*?)[\'"])|(?:require\([\'"](.*?)[\'"]\))|(?:from\s+([A-Za-z0-9_\.]+)\s+import)')
+        
+        for line in lines:
+            match = import_pattern.search(line)
+            if match:
+                target = next(g for g in match.groups() if g is not None)
+                edges.append({
+                    'id': str(uuid.uuid4()),
+                    'repository_id': self.repo_id,
+                    'source_symbol': os.path.basename(file_path),
+                    'target_symbol': target,
+                    'edge_type': 'imports',
+                    'weight': 1.0
+                })
+        return edges
 
     # ----- Tree-sitter AST Parsing -----
     def _parse_with_tree_sitter(self, file_path: str, content: str, lang: str) -> List[Dict[str, Any]]:
@@ -416,6 +397,7 @@ class RepositoryIndexer:
         processed_files = list(already_processed)
         failed_files = []
         all_symbols = []
+        all_edges = []
 
         for full_path, rel_path in all_file_paths:
             if rel_path in already_processed:
@@ -428,6 +410,10 @@ class RepositoryIndexer:
 
                 symbols = self.parse_ast_symbols(rel_path, content)
                 all_symbols.extend(symbols)
+                
+                edges = self._extract_edges(rel_path, content)
+                all_edges.extend(edges)
+                
                 processed_files.append(rel_path)
 
                 # Update job progress after each file
@@ -439,16 +425,28 @@ class RepositoryIndexer:
 
         # Persist AST symbols to repository_symbols table
         self._persist_symbols(all_symbols)
+        
+        # Persist extracted edges to repository_edges table
+        if supabase_client and all_edges:
+            try:
+                # Batch insert in chunks of 500 to avoid size limits
+                chunk_size = 500
+                for i in range(0, len(all_edges), chunk_size):
+                    supabase_client.table('repository_edges').insert(all_edges[i:i+chunk_size]).execute()
+                logger.info(f"Persisted {len(all_edges)} edges to repository_edges.")
+            except Exception as e:
+                logger.error(f"Error persisting edges: {e}")
 
         # Compute embeddings for extracted symbols
         contents = [s['content'] for s in all_symbols]
-        embeddings = self.provider.embed(contents) if contents else []
+        embeddings = generate_embeddings(contents) if contents else []
 
-        # Store embeddings in code_embeddings table
-        if supabase_client and all_symbols:
+        # Store embeddings in code_embeddings table (BATCHED)
+        if supabase_client and all_symbols and embeddings:
             try:
+                records = []
                 for sym, emb in zip(all_symbols, embeddings):
-                    record = {
+                    records.append({
                         'id': str(uuid.uuid4()),
                         'repository_id': self.repo_id,
                         'commit_sha': self.commit_sha,
@@ -461,8 +459,12 @@ class RepositoryIndexer:
                         'content': sym['content'],
                         'embedding': emb,
                         'created_at': datetime.now(timezone.utc).isoformat()
-                    }
-                    supabase_client.table('code_embeddings').insert(record).execute()
+                    })
+                # Batch insert in chunks of 100 to avoid size limits
+                chunk_size = 100
+                for i in range(0, len(records), chunk_size):
+                    supabase_client.table('code_embeddings').insert(records[i:i+chunk_size]).execute()
+                logger.info(f"Persisted {len(records)} embeddings to code_embeddings.")
             except Exception as e:
                 logger.error(f"Error persisting embeddings to Supabase: {e}")
 

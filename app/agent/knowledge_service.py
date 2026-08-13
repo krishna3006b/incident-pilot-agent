@@ -1,6 +1,7 @@
 import logging
 from typing import List, Dict, Any, Optional
 from app.db.supabase import supabase_client, IN_MEMORY_KB, get_incidents
+from app.agent.indexer import MiniLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -62,39 +63,36 @@ class RepositoryKnowledgeService:
         }
 
     def search_code(self, query: str, repo_id: str = "ordering-system", top_k: int = 5) -> List[Dict[str, Any]]:
-        """Search code embeddings via Supabase pgvector RPC or table fallback."""
+        """Search code embeddings via Supabase pgvector RPC."""
         if supabase_client:
             try:
-                # Try RPC match_code with embedding (requires embedding the query first)
-                # Fall back to direct table scan for now
-                res = supabase_client.table('code_embeddings').select(
-                    'id, file_path, symbol_name, symbol_type, content'
-                ).limit(top_k).execute()
+                # Generate query embedding
+                provider = MiniLMProvider()
+                query_embedding = provider.embed([query])[0]
+                
+                # Try to resolve repository UUID
+                manifest = self.get_manifest(repo_id)
+                repo_uuid = manifest.get('repository_id')
+                
+                if repo_uuid and repo_uuid != repo_id:
+                    res = supabase_client.rpc('match_code', {
+                        'query_embedding': query_embedding,
+                        'match_count': top_k,
+                        'repo_id': repo_uuid
+                    }).execute()
+                else:
+                    res = supabase_client.rpc('match_code', {
+                        'query_embedding': query_embedding,
+                        'match_count': top_k
+                    }).execute()
+                    
                 if res.data:
-                    # Add similarity placeholder since we're not doing vector search here
-                    for item in res.data:
-                        item['similarity'] = 0.90
                     return res.data
             except Exception as e:
                 logger.error(f"Error querying code_embeddings: {e}")
 
-        # In-memory fallback
-        return [
-            {
-                'file_path': 'src/app/api/discount/route.ts',
-                'symbol_name': 'POST',
-                'symbol_type': 'function',
-                'content': 'const price = body.product.price;\nreturn NextResponse.json({ discount: price * 0.1 });',
-                'similarity': 0.95
-            },
-            {
-                'file_path': 'src/app/api/inventory/route.ts',
-                'symbol_name': 'POST',
-                'symbol_type': 'function',
-                'content': 'const qty = body.inventory.stock_quantity;\nreturn NextResponse.json({ stock: qty });',
-                'similarity': 0.89
-            }
-        ][:top_k]
+        # In-memory fallback if no DB
+        return []
 
     def get_symbol(self, symbol_name: str, repo_id: str = "ordering-system") -> Optional[Dict[str, Any]]:
         """Fetch a specific symbol definition by name."""
@@ -120,11 +118,7 @@ class RepositoryKnowledgeService:
             except Exception as e:
                 logger.error(f"Error fetching dependencies for {symbol_name}: {e}")
 
-        # Deterministic fallback
-        return [
-            {'source': symbol_name, 'relationship': 'calls', 'target': 'DatabaseClient'},
-            {'source': symbol_name, 'relationship': 'depends_on', 'target': 'AuthValidator'}
-        ]
+        return []
 
     def get_dependents(self, symbol_name: str, repo_id: str = "ordering-system") -> List[Dict[str, Any]]:
         """Fetch incoming dependency edges for a symbol (what calls/imports this symbol)."""
@@ -138,22 +132,36 @@ class RepositoryKnowledgeService:
             except Exception as e:
                 logger.error(f"Error fetching dependents for {symbol_name}: {e}")
 
-        return [
-            {'source': 'APIRouter', 'relationship': 'calls', 'target': symbol_name}
-        ]
+        return []
 
     def get_historical_incident_memory(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
-        """Fetch past resolved incidents for memory-based resolution."""
+        """Fetch past resolved incidents for memory-based resolution. Matches query keywords to root cause."""
         incidents = get_incidents()
         matches = []
+        
+        # Simple semantic-ish keyword matching (instead of vector for now, since incidents table lacks embeddings)
+        query_words = set(re.findall(r'\w+', query.lower()))
+        
         for inc in incidents:
             if inc.get('status') in ['PR_READY', 'RESOLVED', 'CHANGES_REQUESTED']:
+                root_cause = str(inc.get('root_cause', '')).lower()
+                title = str(inc.get('title', '')).lower()
+                
+                # Check for overlap
+                content_words = set(re.findall(r'\w+', root_cause + " " + title))
+                overlap = len(query_words.intersection(content_words))
+                
+                # Add even if no overlap just to fall back to recent ones, but score higher if overlap
                 matches.append({
                     'incident_id': inc.get('id'),
                     'title': inc.get('title'),
-                    'root_cause': inc.get('root_cause', 'Null check missing on request payload'),
-                    'status': inc.get('status')
+                    'root_cause': inc.get('root_cause', 'Unknown root cause'),
+                    'status': inc.get('status'),
+                    'overlap': overlap
                 })
+                
+        # Sort by overlap, then by most recent (assuming order implies recency)
+        matches.sort(key=lambda x: x['overlap'], reverse=True)
         return matches[:top_k]
 
     def get_runbook_entries(self, service_name: str) -> List[Dict[str, Any]]:

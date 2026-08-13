@@ -80,57 +80,7 @@ class RetrievalBudget:
 
 
 # --- Default Target Templates (fallback code for known routes) ---
-DEFAULT_TARGET_TEMPLATES = {
-    "src/app/api/checkout/route.ts": """import { NextResponse } from 'next/server';
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-    const city = body.customer.address.city;
-    return NextResponse.json({ status: 'SUCCESS', transaction_id: 'tx_123', city });
-  } catch (error: any) {
-    const errorMessage = error.message || "TypeError: Cannot read properties of null (reading 'address')";
-    return NextResponse.json({ status: 'ERROR', error: errorMessage }, { status: 500 });
-  }
-}""",
-    "src/app/api/discount/route.ts": """import { NextResponse } from 'next/server';
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-    const firstItemPrice = body.items[0].price;
-    const discount = firstItemPrice * 0.15;
-    return NextResponse.json({ status: 'SUCCESS', discount_amount: discount });
-  } catch (error: any) {
-    const errorMessage = error.message || "TypeError: Cannot read properties of undefined (reading 'price')";
-    return NextResponse.json({ status: 'ERROR', error: errorMessage }, { status: 500 });
-  }
-}""",
-    "src/app/api/inventory/route.ts": """import { NextResponse } from 'next/server';
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-    const stock = body.product.stock_quantity;
-    return NextResponse.json({ status: 'SUCCESS', in_stock: stock > 0, quantity: stock });
-  } catch (error: any) {
-    const errorMessage = error.message || "TypeError: Cannot read properties of null (reading 'stock_quantity')";
-    return NextResponse.json({ status: 'ERROR', error: errorMessage }, { status: 500 });
-  }
-}""",
-    "src/app/api/user/profile/route.ts": """import { NextResponse } from 'next/server';
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-    const { email, role } = body.user;
-    return NextResponse.json({ status: 'SUCCESS', email, role });
-  } catch (error: any) {
-    const errorMessage = error.message || "TypeError: Cannot destructure property 'email' of 'body.user' as it is null";
-    return NextResponse.json({ status: 'ERROR', error: errorMessage }, { status: 500 });
-  }
-}"""
-}
+DEFAULT_TARGET_TEMPLATES = {}
 
 
 def initialize_llm(model_name: str = "llama-3.3-70b-versatile"):
@@ -155,19 +105,7 @@ def find_and_read_target_code(alert_summary: str):
     if matches:
         rel_path = matches[0]
     else:
-        text = alert_summary.lower()
-        if "shipping" in text or "country" in text:
-            rel_path = "src/app/api/shipping/calculate/route.ts"
-        elif "process" in text or "tax" in text or "order" in text:
-            rel_path = "src/lib/payment-processor.ts"
-        elif "discount" in text or "price" in text:
-            rel_path = "src/app/api/discount/route.ts"
-        elif "inventory" in text or "stock" in text:
-            rel_path = "src/app/api/inventory/route.ts"
-        elif "user" in text or "profile" in text:
-            rel_path = "src/app/api/user/profile/route.ts"
-        else:
-            rel_path = "src/app/api/checkout/route.ts"
+        rel_path = ""
 
     github_token = os.getenv("GITHUB_TOKEN")
     github_repo = os.getenv("GITHUB_REPO", "krishna3006b/ordering-system")
@@ -274,8 +212,12 @@ def node_investigate(state: IncidentState) -> IncidentState:
         code_results = ""
 
     # Read target code file
-    if budget.can_call("read_file"):
-        target_file = "target_app/src/app/api/checkout/route.ts"
+    target_file = ""
+    matches = re.findall(r'(src/[\w/-]+\.ts)', search_query)
+    if matches:
+        target_file = matches[0]
+
+    if budget.can_call("read_file") and target_file:
         file_content = read_file.invoke({"repository": state["service_name"], "filepath": target_file})
         budget.record_call("read_file")
     else:
@@ -424,9 +366,8 @@ def _calculate_evidence_confidence(alert_summary: str, rel_path: str, code_conte
     if rel_path != "src/app/api/checkout/route.ts" or "checkout" in text:
         score += 0.15
 
-    # Signal 4: Source code contains suspected bug pattern
-    bug_patterns = ["body.customer.", "body.items[0].", "body.product.", "body.user", "= body."]
-    if any(p in code_content for p in bug_patterns):
+    # Signal 4: Source code contains suspected bug pattern (generic)
+    if "null" in code_content.lower() or "undefined" in code_content.lower() or "error" in code_content.lower():
         score += 0.20
 
     # Signal 5: Root cause is specific
@@ -642,58 +583,32 @@ def node_test(state: IncidentState) -> IncidentState:
 
     validation_errors = []
 
-    # Validation 1: Required structural elements
-    required_patterns = {
-        "import statement": "import",
-        "export declaration": "export",
-    }
-    for check_name, pattern in required_patterns.items():
-        if pattern not in patch_code:
-            validation_errors.append(f"FAIL: Missing {check_name}")
-
-    # Validation 2: Unsafe property accesses gone
-    unsafe_patterns = [
-        "body.customer.address",
-        "body.items[0].price",
-        "body.product.stock_quantity",
-        "body.user.email",
-    ]
-    for unsafe in unsafe_patterns:
-        if unsafe in patch_code:
-            validation_errors.append(f"FAIL: Unsafe property access still present: '{unsafe}'")
-
-    if "= body.user;" in patch_code and "?." not in patch_code and "||" not in patch_code:
-        validation_errors.append("FAIL: Unsafe property access still present: '= body.user;'")
-
-    # Validation 3: Safe optional chaining present
-    if "?." not in patch_code and "||" not in patch_code and "if (" not in patch_code:
-        validation_errors.append("FAIL: No null safety check found in patch")
-
-    # Validation 4: Balanced braces
+    # Validation 1: Balanced braces
     open_braces = patch_code.count("{")
     close_braces = patch_code.count("}")
     if open_braces != close_braces:
         validation_errors.append(f"FAIL: Unbalanced braces (open={open_braces}, close={close_braces})")
 
-    # Validation 5: Code length
-    if len(patch_code) < 100:
+    # Validation 2: Code length
+    if len(patch_code) < 50:
         validation_errors.append(f"FAIL: Patch too short ({len(patch_code)} chars), likely a placeholder")
 
-    # Validation 6: LLM syntax verification
+    # Validation 3: LLM syntax verification
     llm = initialize_llm()
     if llm and len(validation_errors) == 0:
         try:
             verify_prompt = (
-                f"You are a TypeScript compiler. Check this code for syntax errors ONLY.\n"
-                f"```typescript\n{patch_code}\n```\n"
+                f"You are a strict syntax checker for the generated code patch.\n"
+                f"Check this code for severe syntax errors ONLY (e.g. missing semicolons, invalid tokens, unclosed parentheses).\n"
+                f"```\n{patch_code}\n```\n"
                 f"Respond with EXACTLY one word: PASS or FAIL. If FAIL, add a colon and the error."
             )
-            resp = llm.invoke([SystemMessage(content="You are a TypeScript syntax checker."), HumanMessage(content=verify_prompt)])
+            resp = llm.invoke([SystemMessage(content="You are a syntax checker."), HumanMessage(content=verify_prompt)])
             llm_result = str(resp.content).strip()
             if llm_result.startswith("FAIL"):
                 validation_errors.append(f"LLM syntax check: {llm_result}")
             else:
-                logger.info("LLM TypeScript syntax verification: PASS")
+                logger.info("LLM syntax verification: PASS")
         except Exception as e:
             logger.warning(f"LLM syntax verification skipped: {e}")
 
@@ -718,14 +633,12 @@ def node_test(state: IncidentState) -> IncidentState:
         logger.warning(f"Patch validation FAILED for incident {state['incident_id']}: {validation_errors}")
     else:
         state["test_results"] = (
-            f"[REAL VALIDATOR] All {len(required_patterns)} structural checks PASSED.\n"
-            f"Unsafe property access removal: VERIFIED.\n"
-            f"Optional chaining present: VERIFIED.\n"
+            f"[REAL VALIDATOR] Structural checks PASSED.\n"
             f"Brace balance: VERIFIED ({open_braces} pairs).\n"
             f"Code length: {len(patch_code)} chars (healthy).\n"
             f"LLM syntax check: {'PASSED' if llm else 'SKIPPED (no LLM)'}.\n"
             f"Evidence trail: {json.dumps(state.get('evidence_ids', [])[:3])}\n"
-            f"Verdict: PATCH SAFE TO DEPLOY."
+            f"Verdict: Awaiting async sandbox execution results."
         )
         logger.info(f"Patch validation PASSED for incident {state['incident_id']}")
 

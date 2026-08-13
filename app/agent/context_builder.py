@@ -261,15 +261,15 @@ class ContextPacketBuilder:
         incident_id: str,
         service_name: str,
         alert_text: str,
-        commit_sha: str = "v1.8.3",
-        knowledge_version: str = "kv-42"
+        commit_sha: str = "HEAD",
+        knowledge_version: str = "latest"
     ) -> ContextPacket:
         """
         Assembles a ranked Context Packet by gathering evidence from
         logs, git diffs, RAG, dependency graph, and incident memory.
         """
         # 1. Stack Trace Extraction - find target file
-        target_file = 'src/app/api/discount/route.ts'
+        target_file = ''
         file_match = re.search(r'([a-zA-Z0-9_/.\-]+\.(?:ts|tsx|js|py|java))(?::\d+)?', alert_text)
         if file_match:
             target_file = file_match.group(1)

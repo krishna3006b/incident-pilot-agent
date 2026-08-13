@@ -43,9 +43,12 @@ flowchart TD
     G -->|Bounded Retrieval / Tools| K
     
     G -->|Candidate Fix| S[GitHub Actions Sandbox]
-    S -->|PASS / FAIL| G
+    S --> ST{Sandbox Status}
     
-    G -->|Verified Fix| PR[GitHub PR]
+    ST -->|PASS| PR[GitHub PR]
+    ST -->|FAIL| G
+    ST -->|TIMEOUT / SYSTEM_FAILED| F[Failed]
+    
     PR -->|Human Review| H[Merge]
 ```
 

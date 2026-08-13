@@ -115,6 +115,8 @@ def node_test(state: IncidentState) -> IncidentState:
     if validation_errors:
         state["test_results"] = "VALIDATION FAILED:\n" + "\n".join(validation_errors)
         logger.warning(f"Patch validation FAILED for incident {state['incident_id']}: {validation_errors}")
+    elif state.get("sandbox_status") == "PASS":
+        logger.info(f"Patch validation and Sandbox PASSED for incident {state['incident_id']}")
     else:
         state["test_results"] = (
             f"[REAL VALIDATOR] Structural checks PASSED.\n"

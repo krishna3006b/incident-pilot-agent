@@ -52,12 +52,20 @@ def get_incident_by_id(incident_id: str) -> Optional[Dict[str, Any]]:
             res = supabase_client.table("incidents").select("*").eq("id", incident_id).execute()
             if res.data:
                 db_item = res.data[0]
+            elif len(incident_id) < 32:
+                all_res = supabase_client.table("incidents").select("id, status, title, service_name, incident_number").execute()
+                for i in (all_res.data or []):
+                    if i["id"].startswith(incident_id):
+                        # Fetch full row for the matched id
+                        full_res = supabase_client.table("incidents").select("*").eq("id", i["id"]).execute()
+                        db_item = full_res.data[0] if full_res.data else None
+                        break
         except Exception as e:
             logger.error(f"Error querying incident: {e}")
             
     mem_item = None
     for inc in IN_MEMORY_INCIDENTS:
-        if inc["id"] == incident_id or str(inc.get("incident_number", "")) == incident_id:
+        if inc["id"] == incident_id or str(inc.get("incident_number", "")) == incident_id or inc["id"].startswith(incident_id):
             mem_item = inc
             break
             

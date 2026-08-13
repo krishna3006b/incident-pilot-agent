@@ -166,6 +166,18 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
         return {"status": "IGNORED", "reason": f"System event {subtype}"}
 
     text = event_data.get("text") or body.get("text") or ""
+    
+    # Convert Slack emoji shortcodes to actual Unicode emojis
+    emoji_map = {
+        ":rotating_light:": "🚨",
+        ":warning:": "⚠️",
+        ":fire:": "🔥",
+        ":boom:": "💥",
+        ":bug:": "🐛",
+        ":x:": "❌"
+    }
+    for code, emoji in emoji_map.items():
+        text = text.replace(code, emoji)
 
     # Ignore non-incident messages
     if not text or "invite" in text.lower() or "added an integration" in text.lower():

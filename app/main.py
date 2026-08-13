@@ -152,27 +152,25 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
         slack_timestamp = request.headers.get("X-Slack-Request-Timestamp")
         
         if not slack_signature or not slack_timestamp:
-            if not request.headers.get("Postman-Token"):
-                logger.warning("Rejected unauthorized Slack webhook request")
-                raise HTTPException(status_code=401, detail="Unauthorized: Missing Slack Signature")
-        elif not request.headers.get("Postman-Token"):
-            try:
-                if abs(time.time() - int(slack_timestamp)) > 60 * 5:
-                    raise HTTPException(status_code=401, detail="Unauthorized: Request too old")
-            except ValueError:
-                raise HTTPException(status_code=401, detail="Unauthorized: Invalid Timestamp")
-                
-            slack_secret = os.getenv("SLACK_SIGNING_SECRET", "")
-            sig_basestring = f"v0:{slack_timestamp}:{raw_bytes.decode('utf-8')}"
-            my_signature = "v0=" + hmac.new(
-                slack_secret.encode(),
-                sig_basestring.encode(),
-                hashlib.sha256
-            ).hexdigest()
+            logger.warning("Rejected unauthorized Slack webhook request")
+            raise HTTPException(status_code=401, detail="Unauthorized: Missing Slack Signature")
+        try:
+            if abs(time.time() - int(slack_timestamp)) > 60 * 5:
+                raise HTTPException(status_code=401, detail="Unauthorized: Request too old")
+        except ValueError:
+            raise HTTPException(status_code=401, detail="Unauthorized: Invalid Timestamp")
             
-            if not hmac.compare_digest(my_signature, slack_signature):
-                logger.warning("Rejected unauthorized Slack webhook request: Invalid HMAC")
-                raise HTTPException(status_code=401, detail="Unauthorized: Invalid Slack Signature")
+        slack_secret = os.getenv("SLACK_SIGNING_SECRET", "")
+        sig_basestring = f"v0:{slack_timestamp}:{raw_bytes.decode('utf-8')}"
+        my_signature = "v0=" + hmac.new(
+            slack_secret.encode(),
+            sig_basestring.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        if not hmac.compare_digest(my_signature, slack_signature):
+            logger.warning("Rejected unauthorized Slack webhook request: Invalid HMAC")
+            raise HTTPException(status_code=401, detail="Unauthorized: Invalid Slack Signature")
 
     body = {}
     content_type = request.headers.get("content-type", "")
@@ -190,10 +188,6 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
             body = {"text": raw_bytes.decode("utf-8", errors="ignore")}
 
     logger.info(f"Received Slack Webhook payload: {body}")
-
-    # Debug: write payload to file for inspection
-    with open("slack_debug.json", "a") as f:
-        f.write(json.dumps(body) + "\n")
 
     # Handle Slack URL Verification Challenge
     if "challenge" in body:
@@ -280,20 +274,19 @@ async def handle_github_webhook(request: Request):
     if os.getenv("ENFORCE_WEBHOOK_SECRETS", "true").lower() == "true":
         github_signature = request.headers.get("X-Hub-Signature-256")
         if not github_signature:
-            if not request.headers.get("Postman-Token"):
-                logger.warning("Rejected unauthorized GitHub webhook request")
-                raise HTTPException(status_code=401, detail="Unauthorized: Missing GitHub Signature")
-        elif not request.headers.get("Postman-Token"):
-            github_secret = os.getenv("GITHUB_WEBHOOK_SECRET", "")
-            expected_signature = "sha256=" + hmac.new(
-                github_secret.encode(),
-                raw_bytes,
-                hashlib.sha256
-            ).hexdigest()
+            logger.warning("Rejected unauthorized GitHub webhook request")
+            raise HTTPException(status_code=401, detail="Unauthorized: Missing GitHub Signature")
             
-            if not hmac.compare_digest(expected_signature, github_signature):
-                logger.warning("Rejected unauthorized GitHub webhook request: Invalid HMAC")
-                raise HTTPException(status_code=401, detail="Unauthorized: Invalid GitHub Signature")
+        github_secret = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+        expected_signature = "sha256=" + hmac.new(
+            github_secret.encode(),
+            raw_bytes,
+            hashlib.sha256
+        ).hexdigest()
+        
+        if not hmac.compare_digest(expected_signature, github_signature):
+            logger.warning("Rejected unauthorized GitHub webhook request: Invalid HMAC")
+            raise HTTPException(status_code=401, detail="Unauthorized: Invalid GitHub Signature")
 
     try:
         body = json.loads(raw_bytes.decode("utf-8"))
@@ -353,7 +346,11 @@ async def handle_sandbox_result(request: Request):
     Receives test verdict (PASS/FAIL) and authenticates via secret.
     """
     secret = request.headers.get("X-Sandbox-Secret")
-    expected_secret = os.getenv("WEBHOOK_SECRET", "dev-secret")
+    expected_secret = os.getenv("WEBHOOK_SECRET")
+    
+    if not expected_secret:
+        logger.error("WEBHOOK_SECRET is not configured on the server")
+        raise HTTPException(status_code=500, detail="Server configuration error")
     
     if secret != expected_secret:
         logger.warning("Rejected unauthorized sandbox webhook request")
@@ -442,15 +439,22 @@ def get_incident_evidence(incident_id: str):
 async def stream_incident_updates(incident_id: str):
     """
     Server-Sent Events (SSE) streaming endpoint for live Next.js UI updates.
-    Streams agent state transitions in real time.
+    Streams actual agent state transitions from the database in real time.
     """
     async def event_generator():
-        states = ["RECEIVED", "VALIDATING", "INVESTIGATING", "DIAGNOSING", "FIXING", "TESTING", "PR_READY"]
-        for s in states:
-            await asyncio.sleep(1.2)
-            inc = get_incident_by_id(incident_id) or {}
-            inc["status"] = s
-            yield f"data: {inc}\n\n"
+        last_state_json = None
+        while True:
+            inc = get_incident_by_id(incident_id)
+            if inc:
+                current_state_json = json.dumps(inc)
+                if current_state_json != last_state_json:
+                    yield f"data: {current_state_json}\n\n"
+                    last_state_json = current_state_json
+                    
+                if inc.get("status") in ["RESOLVED", "CHANGES_REQUESTED", "FAILED"]:
+                    break
+                    
+            await asyncio.sleep(1.5)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

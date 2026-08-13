@@ -28,14 +28,20 @@ app = FastAPI(
     description="IncidentPilot Autonomous AI Production Investigation & Remediation API"
 )
 
-# Enable CORS for Next.js Dashboard
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+if allowed_origins_env:
+    origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+else:
+    origins = [
         "http://localhost:3000",
         "https://incident-pilot-dashboard.vercel.app",
         "https://incident-pilot.vercel.app"
-    ],
+    ]
+
+# Enable CORS for Next.js Dashboard
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -196,46 +196,28 @@ def node_validate(state: IncidentState) -> IncidentState:
 
 
 def node_investigate(state: IncidentState) -> IncidentState:
-    """Investigate logs, traces, and metrics with budget tracking."""
     logger.info(f"State [INVESTIGATING] incident: {state['incident_id']}")
     state["status"] = "INVESTIGATING"
     state["step_count"] += 1
 
-    budget = RetrievalBudget()
+    alert_summary = state.get("alert_summary", "")
 
-    # Search workspace for affected code
-    search_query = state.get("alert_summary", "")
-    if budget.can_call("search"):
-        code_results = search_code.invoke({"repository": state["service_name"], "query": search_query})
-        budget.record_call("search")
-    else:
-        code_results = ""
+    # Build structured Context Packet (Knowledge-First Design)
+    packet = packet_builder.assemble_packet(
+        incident_id=state["incident_id"],
+        service_name=state["service_name"],
+        alert_text=alert_summary
+    )
 
-    # Read target code file
-    target_file = ""
-    matches = re.findall(r'(src/[\w/-]+\.ts)', search_query)
-    if matches:
-        target_file = matches[0]
-
-    if budget.can_call("read_file") and target_file:
-        file_content = read_file.invoke({"repository": state["service_name"], "filepath": target_file})
-        budget.record_call("read_file")
-    else:
-        file_content = ""
-
-    # Analyze distributed trace
-    if budget.can_call("generic"):
-        trace_data = get_distributed_trace.invoke({"trace_id": "tr_8f99a012b"})
-        budget.record_call("generic")
-    else:
-        trace_data = ""
-
-    state["logs"] = code_results
-    state["trace"] = trace_data
-    state["tool_calls_used"] += budget.total_calls
+    # Collect evidence IDs for traceability
+    state["evidence_ids"] = [e.id for e in packet.all_evidence]
+    
+    # Store the context packet markdown in logs so the dashboard and subsequent nodes can see it
+    state["logs"] = packet.to_markdown()
+    state["trace"] = ""
 
     update_incident_status(state["incident_id"], "INVESTIGATING")
-    logger.info(f"Investigation budget: {budget.summary()}")
+    logger.info(f"Investigation built context packet with {len(state['evidence_ids'])} pieces of evidence.")
     return state
 
 
@@ -249,24 +231,18 @@ def node_diagnose(state: IncidentState) -> IncidentState:
     alert_summary = state.get("alert_summary", "")
     rel_path, code_content = find_and_read_target_code(alert_summary)
     confidence = 0.0
-
-    # Build structured Context Packet
-    packet = packet_builder.assemble_packet(
-        incident_id=state["incident_id"],
-        service_name=state["service_name"],
-        alert_text=alert_summary
-    )
-
-    # Collect evidence IDs for traceability
-    state["evidence_ids"] = [e.id for e in packet.all_evidence]
+    context_markdown = state.get("logs", "")
+    evidence_ids_str = json.dumps(state.get("evidence_ids", []))
 
     if llm and code_content != "// Target code file":
         prompt = (
-            f"{packet.to_markdown()}\n\n"
+            f"{context_markdown}\n\n"
+            f"Available evidence IDs: {evidence_ids_str}\n"
+            f"Select only the IDs that directly support the diagnosis.\n\n"
             f"Respond in EXACTLY this JSON format (no extra text, no markdown fences):\n"
             f'{{"root_cause": "<2 concise sentences identifying the exact root cause>", '
             f'"confidence": <decimal 0.0-1.0>, '
-            f'"evidence": {json.dumps(state["evidence_ids"][:3])}}}'
+            f'"evidence": ["<ev_id_1>", "<ev_id_2>"]}}'
         )
         try:
             resp = llm.invoke([
@@ -288,7 +264,14 @@ def node_diagnose(state: IncidentState) -> IncidentState:
                 state["root_cause"] = result.get("root_cause", content)
                 confidence = float(result.get("confidence", 0.0))
                 confidence = max(0.0, min(1.0, confidence))
-                logger.info(f"Structured diagnosis parsed: confidence={confidence}, evidence={result.get('evidence', [])}")
+                
+                # Intersect model's chosen evidence with actual available evidence
+                raw_chosen = result.get('evidence', [])
+                if isinstance(raw_chosen, list):
+                    valid_chosen = [e for e in raw_chosen if e in state.get("evidence_ids", [])]
+                    state["evidence_ids"] = valid_chosen
+                    
+                logger.info(f"Structured diagnosis parsed: confidence={confidence}, evidence={state['evidence_ids']}")
             except (json.JSONDecodeError, ValueError):
                 # Fallback: parse old-style text format
                 if "ROOT_CAUSE:" in content:
@@ -329,11 +312,17 @@ def node_diagnose(state: IncidentState) -> IncidentState:
                                 pass
                 except Exception as fallback_err:
                     logger.warning(f"Fallback diagnosis failed: {fallback_err}")
-                    state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload."
+                    state["status"] = "DIAGNOSIS_FAILED"
+                    state["root_cause"] = "DIAGNOSIS_FAILED: Model failed to generate root cause."
+                    return state
             else:
-                state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload."
+                state["status"] = "DIAGNOSIS_FAILED"
+                state["root_cause"] = "DIAGNOSIS_FAILED: Model failed to generate root cause."
+                return state
     else:
-        state["root_cause"] = f"TypeError in {rel_path}: Unhandled null/undefined reference in request payload."
+        state["status"] = "DIAGNOSIS_FAILED"
+        state["root_cause"] = "DIAGNOSIS_FAILED: Target code context is missing."
+        return state
 
     # Deterministic confidence if LLM didn't provide one
     if confidence < 0.1:
@@ -735,7 +724,10 @@ if StateGraph is not None:
     workflow.set_entry_point("validate")
     workflow.add_edge("validate", "investigate")
     workflow.add_edge("investigate", "diagnose")
-    workflow.add_edge("diagnose", "fix")
+    workflow.add_conditional_edges("diagnose", lambda s: "failed" if s.get("status") == "DIAGNOSIS_FAILED" else "fix", {
+        "fix": "fix",
+        "failed": "failed"
+    })
     workflow.add_edge("fix", "test")
 
     workflow.add_conditional_edges("test", route_after_test, {

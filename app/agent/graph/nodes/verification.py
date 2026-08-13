@@ -58,7 +58,7 @@ def node_test(state: IncidentState) -> IncidentState:
         if callback_url:
             callback_url = f"{callback_url}/api/v1/webhooks/sandbox-result"
             
-        sandbox_triggered = trigger_sandbox_test(
+        sandbox_run_id = trigger_sandbox_test(
             incident_id=state["incident_id"],
             target_file=rel_path,
             patch_code=patch_code,
@@ -67,8 +67,45 @@ def node_test(state: IncidentState) -> IncidentState:
             build_cmd=meta.get("build_cmd", ""),
             test_cmd=meta.get("test_cmd", "")
         )
-        if sandbox_triggered:
-            logger.info(f"GitHub Actions sandbox test triggered for incident {state['incident_id']}")
+        if sandbox_run_id:
+            logger.info(f"GitHub Actions sandbox test triggered for run {sandbox_run_id}")
+            import time
+            from app.db.supabase import get_sandbox_run
+            
+            max_wait_seconds = 180
+            wait_interval = 5
+            waited = 0
+            sandbox_resolved = False
+            
+            while waited < max_wait_seconds:
+                time.sleep(wait_interval)
+                waited += wait_interval
+                
+                run = get_sandbox_run(sandbox_run_id)
+                if not run:
+                    continue
+                    
+                status = run.get("status", "PENDING")
+                
+                if status == "FAIL":
+                    validation_errors.append("FAIL: Sandbox execution completed but tests failed. Patch is incorrect.")
+                    sandbox_resolved = True
+                    break
+                    
+                if status == "SYSTEM_FAILED":
+                    validation_errors.append("FAIL: Sandbox infrastructure error (timeout or internal crash).")
+                    sandbox_resolved = True
+                    break
+                    
+                if status == "PASS":
+                    logger.info(f"Async sandbox webhook returned PASS for run {sandbox_run_id}")
+                    sandbox_resolved = True
+                    break
+                    
+            if not sandbox_resolved:
+                from app.db.supabase import update_sandbox_run
+                update_sandbox_run(sandbox_run_id, {"status": "TIMEOUT"})
+                validation_errors.append("FAIL: Sandbox execution timed out after 3 minutes.")
 
     if validation_errors:
         state["test_results"] = "VALIDATION FAILED:\n" + "\n".join(validation_errors)

@@ -350,23 +350,31 @@ async def handle_github_webhook(request: Request):
 async def handle_sandbox_result(request: Request):
     """
     Callback endpoint for GitHub Actions sandbox-test.yml.
-    Receives test verdict (PASS/FAIL) after isolated patch validation.
+    Receives test verdict (PASS/FAIL) and authenticates via secret.
     """
+    secret = request.headers.get("X-Sandbox-Secret")
+    expected_secret = os.getenv("WEBHOOK_SECRET", "dev-secret")
+    
+    if secret != expected_secret:
+        logger.warning("Rejected unauthorized sandbox webhook request")
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
     body = await request.json()
     incident_id = body.get("incident_id")
+    sandbox_run_id = body.get("sandbox_run_id")
     verdict = body.get("verdict", "UNKNOWN")
     run_url = body.get("run_url", "")
 
-    logger.info(f"Sandbox result for incident {incident_id}: verdict={verdict}, run_url={run_url}")
+    logger.info(f"Sandbox result for run {sandbox_run_id} (incident {incident_id}): verdict={verdict}")
 
-    if incident_id:
-        if verdict == "PASS":
-            logger.info(f"Sandbox PASSED for incident {incident_id}. Patch verified in isolation.")
-        else:
-            logger.warning(f"Sandbox FAILED for incident {incident_id}. Run: {run_url}")
-            update_incident_status(incident_id, "FAILED", {
-                "candidate_patch": f"// SANDBOX_FAILED: GitHub Actions test failed. See: {run_url}"
-            })
+    if sandbox_run_id:
+        from app.db.supabase import update_sandbox_run
+        update_sandbox_run(sandbox_run_id, {
+            "status": verdict,
+            "verdict": verdict,
+            "run_url": run_url,
+            "completed_at": datetime.now(timezone.utc).isoformat()
+        })
 
     return {"status": "OK", "verdict": verdict}
 

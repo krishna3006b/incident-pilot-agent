@@ -15,6 +15,9 @@ on:
       incident_id:
         description: 'Incident ID for callback'
         required: true
+      sandbox_run_id:
+        description: 'Unique Sandbox Run ID'
+        required: false
       callback_url:
         description: 'Backend callback URL'
         required: false
@@ -37,6 +40,7 @@ jobs:
       TARGET_FILE: ${{ github.event.client_payload.target_file || github.event.inputs.target_file }}
       PATCH_CODE: ${{ github.event.client_payload.patch_code || github.event.inputs.patch_code }}
       INCIDENT_ID: ${{ github.event.client_payload.incident_id || github.event.inputs.incident_id }}
+      SANDBOX_RUN_ID: ${{ github.event.client_payload.sandbox_run_id || github.event.inputs.sandbox_run_id }}
       CALLBACK_URL: ${{ github.event.client_payload.callback_url || github.event.inputs.callback_url }}
       SETUP_COMMAND: ${{ github.event.client_payload.setup_command || github.event.inputs.setup_command || 'npm install' }}
       BUILD_COMMAND: ${{ github.event.client_payload.build_command || github.event.inputs.build_command || 'npx tsc --noEmit' }}
@@ -107,8 +111,10 @@ jobs:
           VERDICT="${{ steps.verdict.outputs.VERDICT }}"
           curl -X POST "$CALLBACK_URL" \
             -H "Content-Type: application/json" \
+            -H "X-Sandbox-Secret: ${{ secrets.WEBHOOK_SECRET || 'dev-secret' }}" \
             -d "{
               \"incident_id\": \"$INCIDENT_ID\",
+              \"sandbox_run_id\": \"$SANDBOX_RUN_ID\",
               \"verdict\": \"$VERDICT\",
               \"target_file\": \"$TARGET_FILE\",
               \"run_id\": \"${{ github.run_id }}\",

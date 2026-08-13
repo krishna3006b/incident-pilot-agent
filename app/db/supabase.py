@@ -25,6 +25,8 @@ IN_MEMORY_INCIDENTS: List[Dict[str, Any]] = []
 
 IN_MEMORY_KB: List[Dict[str, Any]] = []
 
+IN_MEMORY_SANDBOX_RUNS: List[Dict[str, Any]] = []
+
 def get_incidents() -> List[Dict[str, Any]]:
     """Fetch all incidents from Supabase or fallback store."""
     db_data = []
@@ -115,6 +117,55 @@ def update_incident_status(incident_id: str, status: str, extra: Optional[Dict[s
     for inc in IN_MEMORY_INCIDENTS:
         if inc["id"] == incident_id:
             return inc
+    return None
+
+def create_sandbox_run(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a new sandbox execution record."""
+    IN_MEMORY_SANDBOX_RUNS.append(data)
+    if supabase_client:
+        try:
+            res = supabase_client.table("sandbox_runs").insert(data).execute()
+            if res.data:
+                return res.data[0]
+        except Exception as e:
+            if "row-level security" in str(e).lower() or "42501" in str(e) or "42P01" in str(e):
+                logger.warning("Supabase sandbox_runs table missing or RLS active: Saved run to in-memory store.")
+            else:
+                logger.error(f"Error inserting sandbox run into Supabase: {e}")
+    return data
+
+def get_sandbox_run(run_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch a single sandbox run by ID."""
+    if supabase_client:
+        try:
+            res = supabase_client.table("sandbox_runs").select("*").eq("id", run_id).execute()
+            if res.data:
+                return res.data[0]
+        except Exception:
+            pass
+            
+    for run in IN_MEMORY_SANDBOX_RUNS:
+        if run["id"] == run_id:
+            return run
+    return None
+
+def update_sandbox_run(run_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Update status and metadata for a sandbox run."""
+    for run in IN_MEMORY_SANDBOX_RUNS:
+        if run["id"] == run_id:
+            run.update(update_data)
+            
+    if supabase_client:
+        try:
+            res = supabase_client.table("sandbox_runs").update(update_data).eq("id", run_id).execute()
+            if res.data:
+                return res.data[0]
+        except Exception:
+            pass
+            
+    for run in IN_MEMORY_SANDBOX_RUNS:
+        if run["id"] == run_id:
+            return run
     return None
 
 def search_knowledge_base(query: str, top_k: int = 3) -> List[Dict[str, Any]]:

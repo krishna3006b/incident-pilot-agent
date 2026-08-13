@@ -77,14 +77,29 @@ def find_and_read_target_code(alert_summary: str) -> Tuple[str, str]:
 
     return rel_path, combined_content
 
-def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, target_branch: str = "main", callback_url: str = "", setup_cmd: str = "", build_cmd: str = "", test_cmd: str = "") -> bool:
-    """Trigger GitHub Actions sandbox-test.yml via repository_dispatch on agent repo."""
+def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, target_branch: str = "main", callback_url: str = "", setup_cmd: str = "", build_cmd: str = "", test_cmd: str = "") -> str:
+    """Trigger GitHub Actions sandbox-test.yml via repository_dispatch on agent repo and track the run."""
+    import uuid
+    from datetime import datetime, timezone
+    from app.db.supabase import create_sandbox_run
+    
     github_token = os.getenv("GITHUB_TOKEN")
     agent_repo = os.getenv("AGENT_REPO", "")
 
+    sandbox_run_id = f"{incident_id}-{str(uuid.uuid4())[:8]}"
+    
+    # Pre-register the sandbox run in the database
+    create_sandbox_run({
+        "id": sandbox_run_id,
+        "incident_id": incident_id,
+        "status": "PENDING",
+        "verdict": "UNKNOWN",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+
     if not github_token:
         logger.warning("No GITHUB_TOKEN set, skipping sandbox trigger.")
-        return False
+        return sandbox_run_id
 
     try:
         resp = httpx.post(
@@ -97,6 +112,7 @@ def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, ta
                 "event_type": "validate_patch",
                 "client_payload": {
                     "incident_id": incident_id,
+                    "sandbox_run_id": sandbox_run_id,
                     "target_file": target_file,
                     "target_branch": target_branch,
                     "patch_code": patch_code[:5000],
@@ -109,13 +125,15 @@ def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, ta
             timeout=10.0
         )
         if resp.status_code in (200, 204):
-            logger.info(f"Sandbox test triggered on {agent_repo} for incident {incident_id}")
-            return True
+            logger.info(f"Sandbox test triggered on {agent_repo} for run {sandbox_run_id}")
+            from app.db.supabase import update_sandbox_run
+            update_sandbox_run(sandbox_run_id, {"status": "RUNNING"})
         else:
             logger.warning(f"Sandbox trigger for {agent_repo} returned {resp.status_code}: {resp.text}")
     except Exception as e:
         logger.warning(f"Sandbox trigger failed: {e}")
-    return False
+        
+    return sandbox_run_id
 
 def _calculate_evidence_confidence(alert_summary: str, rel_path: str, code_content: str, root_cause: str) -> float:
     """Calculate confidence score from evidence quality signals."""

@@ -41,7 +41,15 @@ graph TD
     G -->|Pass| H[Open GitHub PR]
     G -->|Fail| C
     H --> I[Awaiting Human Approval]
+    I -->|PR Comment| J[Update Knowledge Base & Retry]
 ```
+
+### 🧠 Self-Learning Knowledge Base (Verified Human Feedback)
+IncidentPilot learns from human intervention. If an engineer reviews the AI's generated Pull Request and leaves a comment (e.g., *"This patch doesn't handle edge cases, please use the `discountService` instead"*), the GitHub webhook instantly intercepts the comment.
+
+1. The incident is marked as `CHANGES_REQUESTED`.
+2. The human's comment is permanently appended to `knowledge_base.json` as **Verified Human Feedback**.
+3. The next time a similar incident occurs, the AI searches this Knowledge Base and applies the previous human guidance before writing a new patch, ensuring it never makes the same mistake twice.
 
 ---
 

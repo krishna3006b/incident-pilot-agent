@@ -1,7 +1,7 @@
 import re
 import logging
 from typing import List, Dict, Any, Optional
-from app.db.supabase import supabase_client, IN_MEMORY_KB, get_incidents
+from app.db.supabase import supabase_client, get_incidents
 from app.services.embedding import generate_embeddings
 
 logger = logging.getLogger(__name__)
@@ -177,7 +177,7 @@ class RepositoryKnowledgeService:
                     return res.data
             except Exception as e:
                 logger.error(f"Error fetching runbooks: {e}")
-        return IN_MEMORY_KB
+        return []
 
 
 # Singleton instance

@@ -80,6 +80,8 @@ def search_code(repository: str, query: str) -> str:
         if os.path.exists(target_path):
             for root, _, files in os.walk(target_path):
                 for file in files:
+                    if file in {".env", ".env.local", "secrets.json", ".npmrc", "config.json"}:
+                        continue
                     if file.endswith((".ts", ".js", ".tsx", ".jsx", ".py", ".java")):
                         filepath = os.path.join(root, file)
                         rel_path = os.path.relpath(filepath, base_dir)
@@ -100,6 +102,9 @@ def search_code(repository: str, query: str) -> str:
 @tool
 def read_file(repository: str, filepath: str) -> str:
     """Read the full content of a target source code file in the repository."""
+    if os.path.basename(filepath) in {".env", ".env.local", "secrets.json", ".npmrc", "config.json"}:
+        return "Access Denied: Security Policy Violation"
+
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
     full_path = os.path.join(base_dir, filepath)
     

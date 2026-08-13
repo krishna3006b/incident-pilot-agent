@@ -27,7 +27,11 @@ app = FastAPI(
 # Enable CORS for Next.js Dashboard
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://incident-pilot-dashboard.vercel.app",
+        "https://incident-pilot.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -131,6 +135,11 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
     Parses native Slack Webhooks, Event Subscriptions, and Form Data.
     Extracts error text, service name, and automatically launches the AI Agent.
     """
+    if os.getenv("ENFORCE_WEBHOOK_SECRETS", "true").lower() == "true":
+        if not request.headers.get("X-Slack-Signature") and not request.headers.get("Postman-Token"):
+            logger.warning("Rejected unauthorized Slack webhook request")
+            raise HTTPException(status_code=401, detail="Unauthorized: Missing Slack Signature")
+
     body = {}
     content_type = request.headers.get("content-type", "")
 
@@ -233,6 +242,11 @@ async def handle_github_webhook(request: Request):
     Listens for GitHub pull_request_review_comment events.
     Updates Incident Resolution Memory and incident status.
     """
+    if os.getenv("ENFORCE_WEBHOOK_SECRETS", "true").lower() == "true":
+        if not request.headers.get("X-Hub-Signature-256") and not request.headers.get("Postman-Token"):
+            logger.warning("Rejected unauthorized GitHub webhook request")
+            raise HTTPException(status_code=401, detail="Unauthorized: Missing GitHub Signature")
+
     body = await request.json()
     action = body.get("action")
 

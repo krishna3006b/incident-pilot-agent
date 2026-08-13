@@ -2,6 +2,10 @@ import asyncio
 import uuid
 import logging
 import json
+import os
+import hmac
+import hashlib
+import time
 from typing import Dict, Any
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -135,10 +139,34 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
     Parses native Slack Webhooks, Event Subscriptions, and Form Data.
     Extracts error text, service name, and automatically launches the AI Agent.
     """
+    raw_bytes = await request.body()
+    
     if os.getenv("ENFORCE_WEBHOOK_SECRETS", "true").lower() == "true":
-        if not request.headers.get("X-Slack-Signature") and not request.headers.get("Postman-Token"):
-            logger.warning("Rejected unauthorized Slack webhook request")
-            raise HTTPException(status_code=401, detail="Unauthorized: Missing Slack Signature")
+        slack_signature = request.headers.get("X-Slack-Signature")
+        slack_timestamp = request.headers.get("X-Slack-Request-Timestamp")
+        
+        if not slack_signature or not slack_timestamp:
+            if not request.headers.get("Postman-Token"):
+                logger.warning("Rejected unauthorized Slack webhook request")
+                raise HTTPException(status_code=401, detail="Unauthorized: Missing Slack Signature")
+        elif not request.headers.get("Postman-Token"):
+            try:
+                if abs(time.time() - int(slack_timestamp)) > 60 * 5:
+                    raise HTTPException(status_code=401, detail="Unauthorized: Request too old")
+            except ValueError:
+                raise HTTPException(status_code=401, detail="Unauthorized: Invalid Timestamp")
+                
+            slack_secret = os.getenv("SLACK_SIGNING_SECRET", "")
+            sig_basestring = f"v0:{slack_timestamp}:{raw_bytes.decode('utf-8')}"
+            my_signature = "v0=" + hmac.new(
+                slack_secret.encode(),
+                sig_basestring.encode(),
+                hashlib.sha256
+            ).hexdigest()
+            
+            if not hmac.compare_digest(my_signature, slack_signature):
+                logger.warning("Rejected unauthorized Slack webhook request: Invalid HMAC")
+                raise HTTPException(status_code=401, detail="Unauthorized: Invalid Slack Signature")
 
     body = {}
     content_type = request.headers.get("content-type", "")
@@ -150,7 +178,6 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
             form = await request.form()
             body = dict(form)
     except Exception as e:
-        raw_bytes = await request.body()
         try:
             body = json.loads(raw_bytes.decode("utf-8"))
         except Exception:
@@ -242,12 +269,31 @@ async def handle_github_webhook(request: Request):
     Listens for GitHub pull_request_review_comment events.
     Updates Incident Resolution Memory and incident status.
     """
+    raw_bytes = await request.body()
+    
     if os.getenv("ENFORCE_WEBHOOK_SECRETS", "true").lower() == "true":
-        if not request.headers.get("X-Hub-Signature-256") and not request.headers.get("Postman-Token"):
-            logger.warning("Rejected unauthorized GitHub webhook request")
-            raise HTTPException(status_code=401, detail="Unauthorized: Missing GitHub Signature")
+        github_signature = request.headers.get("X-Hub-Signature-256")
+        if not github_signature:
+            if not request.headers.get("Postman-Token"):
+                logger.warning("Rejected unauthorized GitHub webhook request")
+                raise HTTPException(status_code=401, detail="Unauthorized: Missing GitHub Signature")
+        elif not request.headers.get("Postman-Token"):
+            github_secret = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+            expected_signature = "sha256=" + hmac.new(
+                github_secret.encode(),
+                raw_bytes,
+                hashlib.sha256
+            ).hexdigest()
+            
+            if not hmac.compare_digest(expected_signature, github_signature):
+                logger.warning("Rejected unauthorized GitHub webhook request: Invalid HMAC")
+                raise HTTPException(status_code=401, detail="Unauthorized: Invalid GitHub Signature")
 
-    body = await request.json()
+    try:
+        body = json.loads(raw_bytes.decode("utf-8"))
+    except Exception:
+        body = {}
+
     action = body.get("action")
 
     # Handle PR Comment Feedback (Verified Human Feedback)

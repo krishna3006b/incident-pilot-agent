@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://via.placeholder.com/150" alt="IncidentPilot Logo" />
+  <img src="logo.svg" alt="IncidentPilot Logo" width="120" />
   <h1>IncidentPilot 🚨</h1>
   <p><strong>AI-powered production incident investigation & remediation</strong></p>
   <p>
@@ -12,9 +12,10 @@
     <img src="https://img.shields.io/badge/status-active_development-blue" alt="Status" />
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
   </p>
+  <p><em>Status: End-to-end incident → investigation → remediation → sandbox verification → PR flow operational.</em></p>
 </div>
 
-IncidentPilot turns production incidents into evidence-backed, tested GitHub pull requests. It builds repository-specific knowledge before an incident occurs, investigates alerts using bounded retrieval, generates candidate fixes, verifies them in an isolated environment, and keeps a human in the loop before code is merged.
+IncidentPilot turns production incidents into evidence-backed, tested GitHub pull requests. It builds repository-specific knowledge before an incident occurs, investigates alerts using bounded retrieval, generates candidate fixes, verifies them through sandboxed tests, and keeps a human in the loop before code is merged. IncidentPilot never merges or deploys a generated change autonomously; its output is a reviewable GitHub PR.
 
 ## 🎥 Demo
 
@@ -24,25 +25,27 @@ IncidentPilot turns production incidents into evidence-backed, tested GitHub pul
 ## 🧩 The Problem
 Production incidents often require engineers to correlate alerts, logs, deployments, code changes, and historical incidents before writing and validating a fix. IncidentPilot automates this investigation loop while keeping the final code change under human review. 
 
+## 🌟 What makes IncidentPilot different?
+Most coding agents begin with the incident prompt and search the repository on demand. IncidentPilot starts by building repository knowledge—symbols, semantic code embeddings, dependencies, runbooks and incident history—then constructs a bounded evidence packet for each incident.
+
+The agent is therefore reasoning over selected evidence rather than the entire repository, while still having access to bounded follow-up retrieval when necessary.
+
 ## ⚡ How It Works
 
 ```mermaid
 flowchart TD
-    A[Production Alert] -->|Slack / Webhook| B(Evidence Collector)
-    B --> C[Logs]
-    B --> D[Git Deployments]
+    A[Production Alert] -->|Slack / Webhook| B[Evidence Collector]
+    K[Repository Knowledge] --> P[Context Packet]
+    C[Logs] --> P
+    D[Git / Deployment History] --> P
     
-    K[Repository Knowledge] -->|Code RAG Graph| P
-    K -->|Incident Memory| P
+    P --> G[Groq Agent]
+    G -->|Bounded Retrieval / Tools| K
     
-    C --> P(Context Packet)
-    D --> P
+    G -->|Candidate Fix| S[GitHub Actions Sandbox]
+    S -->|PASS / FAIL| G
     
-    P -->|Bounded Tool Retrieval| G[Groq Agent]
-    G -->|Candidate Fix| S(GitHub Actions Sandbox)
-    S -->|Tests Pass/Fail| G
-    
-    S -->|Tests| PR[GitHub PR]
+    G -->|Verified Fix| PR[GitHub PR]
     PR -->|Human Review| H[Merge]
 ```
 
@@ -51,7 +54,7 @@ Don't give a massive monolithic repository directly to an agent. IncidentPilot b
 
 `Repository` ↓ `Tree-sitter symbol extraction` ↓ `Semantic code embeddings` ↓ `Dependency graph` ↓ `Incident / runbook memory` ↓ `Production evidence` ↓ `Ranked Context Packet` ↓ `Agent`
 
-The agent is never blindly guessing file structures; it operates strictly on bounded context packets and can explicitly request additional evidence when necessary.
+The agent starts from a bounded context packet and can request additional evidence through controlled retrieval tools when necessary.
 
 ## 🔄 End-to-End Flow
 
@@ -67,7 +70,7 @@ The agent is never blindly guessing file structures; it operates strictly on bou
 14:03:51  PR created
 ```
 
-## 🧪 Example Incident
+## 🧪 Example: Seeded Production-Like Incident
 
 **🚨 payment-service HTTP 500 rate > 20%**
 
@@ -93,11 +96,11 @@ Tree-sitter extracts symbols/classes/functions rather than blindly chunking file
 ### Bounded Agent Execution
 Context size, tool calls, repair attempts, and execution time are constrained.
 ### Evidence-Grounded Diagnosis
-Agent conclusions strictly reference persisted evidence IDs.
+Agent conclusions reference and validate persisted evidence IDs before being accepted.
 ### Sandbox Verification
-Generated changes are tested asynchronously outside the agent backend via GitHub Actions before a PR is created.
+Generated changes are tested asynchronously in an isolated GitHub Actions workflow; a PR is created only after an explicit sandbox PASS.
 ### Human-in-the-Loop
-The agent opens a PR; a human remains strictly responsible for merging.
+A human remains responsible for reviewing and merging the generated change.
 ### Incident Resolution Memory
 Verified historical resolutions are persisted and reused during future investigations.
 
@@ -115,40 +118,36 @@ IncidentPilot is actively evaluated against seeded production-like incidents usi
 | **Context size** | Tokens/evidence supplied to the model |
 | **LLM cost** | Estimated cost per incident |
 
-*(Results pending benchmark execution phase).*
+> **Benchmark setup:** Same incidents, same repository, same test environment; compare fly-blind vs knowledge-first execution.
+
+*(Benchmark results will be published after evaluation on seeded production-like incidents; no performance numbers are claimed before measurement.)*
 
 ## 🔐 Security Guardrails
 
-- **HMAC Webhook Validation**: Enforces cryptographic signatures for Slack and GitHub callbacks.
+- **Webhook Authentication**: Validates authenticated Slack/GitHub callbacks before processing events.
 - **Isolated Sandbox**: Code execution runs securely in ephemeral GitHub Actions runners, never on the backend infrastructure.
 - **Human Approval**: Absolutely no direct main-branch commits.
-- **Restricted File Access**: Bounded retrieval reduces the risk of prompt injection attempting to access sensitive system files.
-- **CORS Protection**: Hardened frontend/backend API boundaries.
+- **Bounded File Retrieval**: Limits which repository/files the agent can request and reduces the blast radius of malicious or irrelevant inputs.
 
 ## 🛠️ Tech Stack
 
 **AI / Agent**
-- Groq API
-- LangGraph / LangChain
+Groq, LangGraph, LangChain
 
 **Backend**
-- Python / FastAPI / Uvicorn
+Python, FastAPI, Uvicorn
 
 **Knowledge / Retrieval**
-- Tree-sitter / SentenceTransformers
-- PostgreSQL / pgvector
+Tree-sitter, SentenceTransformers, PostgreSQL, pgvector
 
 **Frontend**
-- Next.js / TypeScript / Tailwind CSS
+Next.js, TypeScript, Tailwind CSS
 
 **Integrations**
-- Slack / GitHub API
+Slack, GitHub API, GitHub Actions
 
-**Execution**
-- GitHub Actions isolated workflow
-
-**Observability / State**
-- PostgreSQL / Server-Sent Events (SSE)
+**Streaming / State**
+SSE, PostgreSQL
 
 ## ⚙️ Architecture Decisions
 
@@ -159,7 +158,7 @@ Keeps operational state and vector retrieval in PostgreSQL without introducing a
 Provides structural source-code understanding and semantic chunking.
 
 **Why Knowledge First?**
-Avoids flooding the model with irrelevant repository context, significantly improving accuracy.
+Avoids flooding the model with irrelevant repository context and provides a bounded, evidence-ranked context for reasoning.
 
 **Why bounded retrieval?**
 Controls model cost, latency, and uncontrolled tool execution.
@@ -172,15 +171,23 @@ The system prepares and verifies changes; it does not autonomously merge product
 
 ## 🚀 Getting Started
 
+### Prerequisites
+- Python 3.x
+- Node.js
+- Supabase project
+- Groq API key
+- GitHub credentials
+- Slack app/webhook
+
 ### Setup
-1. Create a Supabase project
-2. Apply the database schema (`app/db/schema.sql`)
-3. Configure environment variables (`.env`)
+1. Clone the repository
+2. Configure environment variables (`.env`)
+3. Apply the database schema (`app/db/schema.sql`)
 4. Configure the Slack webhook
 5. Configure GitHub API credentials
 6. Index your target repository
 7. Start the backend (`uvicorn main:app --reload`)
-8. Start the dashboard
+8. Start the frontend/dashboard
 9. Trigger a test incident
 
 ## ⚠️ Current Limitations

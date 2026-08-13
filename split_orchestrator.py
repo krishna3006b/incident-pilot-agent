@@ -1,191 +1,22 @@
 import os
-import time
-import httpx
-import logging
-import json
-import re
-from typing import Dict, Any, List, TypedDict, Optional
-try:
-    from langchain_groq import ChatGroq
-    from langchain_core.messages import SystemMessage, HumanMessage
-    from langgraph.graph import StateGraph, END
-except ImportError:
-    ChatGroq = None
-    StateGraph = None
-    END = "END"
-from app.core.config import settings
-from app.agent.tools import ALL_AGENT_TOOLS, get_logs, get_distributed_trace, search_code, read_file, run_tests_in_sandbox, create_github_pr
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "app", "agent", "graph"))
+NODES_DIR = os.path.join(BASE_DIR, "nodes")
+
+os.makedirs(NODES_DIR, exist_ok=True)
+
+# 1. nodes/__init__.py
+with open(os.path.join(NODES_DIR, "__init__.py"), "w", encoding="utf-8") as f:
+    f.write("")
+
+# 2. nodes/validate.py
+with open(os.path.join(NODES_DIR, "validate.py"), "w", encoding="utf-8") as f:
+    f.write('''import logging
 from app.db.supabase import update_incident_status
-from app.agent.context_builder import packet_builder
+from app.agent.graph.states import IncidentState
 
 logger = logging.getLogger(__name__)
 
-
-# --- State Type ---
-class IncidentState(TypedDict):
-    incident_id: str
-    service_name: str
-    alert_summary: str
-    status: str
-    logs: str
-    trace: str
-    root_cause: str
-    candidate_patch: str
-    fixed_code: Optional[str]
-    confidence: Optional[float]
-    test_results: str
-    pr_url: str
-    step_count: int
-    fix_attempts: int
-    token_usage: int
-    tool_calls_used: int
-    evidence_ids: List[str]
-    error: Optional[str]
-
-
-# --- Retrieval Budget Tracker ---
-class RetrievalBudget:
-    """Tracks tool call usage against budget limits."""
-    def __init__(self, max_tool_calls=20, max_read_file=10, max_search=5):
-        self.max_tool_calls = max_tool_calls
-        self.max_read_file = max_read_file
-        self.max_search = max_search
-        self.total_calls = 0
-        self.read_file_calls = 0
-        self.search_calls = 0
-
-    def can_call(self, call_type: str = "generic") -> bool:
-        if self.total_calls >= self.max_tool_calls:
-            return False
-        if call_type == "read_file" and self.read_file_calls >= self.max_read_file:
-            return False
-        if call_type == "search" and self.search_calls >= self.max_search:
-            return False
-        return True
-
-    def record_call(self, call_type: str = "generic"):
-        self.total_calls += 1
-        if call_type == "read_file":
-            self.read_file_calls += 1
-        elif call_type == "search":
-            self.search_calls += 1
-
-    def summary(self) -> Dict[str, int]:
-        return {
-            "total_calls": self.total_calls,
-            "max_tool_calls": self.max_tool_calls,
-            "read_file_calls": self.read_file_calls,
-            "search_calls": self.search_calls
-        }
-
-
-# --- Default Target Templates (fallback code for known routes) ---
-DEFAULT_TARGET_TEMPLATES = {}
-
-
-def initialize_llm(model_name: str = "llama-3.3-70b-versatile"):
-    groq_key = settings.GROQ_API_KEY or os.getenv("GROQ_API_KEY")
-    if groq_key and ChatGroq:
-        try:
-            return ChatGroq(
-                groq_api_key=groq_key,
-                model_name=model_name,
-                temperature=0.1,
-                max_tokens=2048
-            )
-        except Exception as e:
-            logger.warning(f"Groq LLM init failed for {model_name}: {e}.")
-    return None
-
-
-def find_and_read_target_code(alert_summary: str):
-    """Extract target file from alert and fetch its code content."""
-    matches = re.findall(r'(src/[\w/-]+\.ts)', alert_summary)
-
-    if matches:
-        rel_path = matches[0]
-    else:
-        rel_path = ""
-
-    github_token = os.getenv("GITHUB_TOKEN")
-    github_repo = os.getenv("GITHUB_REPO", "")
-
-    def fetch_file_content(path: str) -> str:
-        if github_token and github_repo:
-            try:
-                headers = {
-                    "Authorization": f"Bearer {github_token}",
-                    "Accept": "application/vnd.github.v3+json"
-                }
-                resp = httpx.get(f"https://api.github.com/repos/{github_repo}/contents/{path}", headers=headers, timeout=10.0)
-                if resp.status_code == 200:
-                    import base64
-                    return base64.b64decode(resp.json().get("content", "")).decode("utf-8")
-            except Exception as e:
-                logger.warning(f"Failed to fetch {path} from GitHub: {e}")
-
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-        full_path = os.path.join(base_dir, "target_app", path)
-        if os.path.exists(full_path):
-            try:
-                with open(full_path, "r", encoding="utf-8") as f:
-                    return f.read()
-            except Exception:
-                pass
-        return DEFAULT_TARGET_TEMPLATES.get(path, "")
-
-    primary_content = fetch_file_content(rel_path)
-
-    combined_content = f"// Primary Target File: {rel_path}\n{primary_content}"
-    unique_paths = list(dict.fromkeys(matches))
-    for extra_path in unique_paths[1:]:
-        extra_code = fetch_file_content(extra_path)
-        if extra_code:
-            combined_content += f"\n\n// Related Module File: {extra_path}\n{extra_code}"
-
-    return rel_path, combined_content
-
-
-# --- Sandbox Trigger ---
-def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, target_branch: str = "main", callback_url: str = "") -> bool:
-    """Trigger GitHub Actions sandbox-test.yml via repository_dispatch on agent repo."""
-    github_token = os.getenv("GITHUB_TOKEN")
-    agent_repo = os.getenv("AGENT_REPO", "")
-
-    if not github_token:
-        logger.warning("No GITHUB_TOKEN set, skipping sandbox trigger.")
-        return False
-
-    try:
-        resp = httpx.post(
-            f"https://api.github.com/repos/{agent_repo}/dispatches",
-            headers={
-                "Authorization": f"Bearer {github_token}",
-                "Accept": "application/vnd.github.v3+json"
-            },
-            json={
-                "event_type": "validate_patch",
-                "client_payload": {
-                    "incident_id": incident_id,
-                    "target_file": target_file,
-                    "target_branch": target_branch,
-                    "patch_code": patch_code[:5000],
-                    "callback_url": callback_url
-                }
-            },
-            timeout=10.0
-        )
-        if resp.status_code in (200, 204):
-            logger.info(f"Sandbox test triggered on {agent_repo} for incident {incident_id}")
-            return True
-        else:
-            logger.warning(f"Sandbox trigger for {agent_repo} returned {resp.status_code}: {resp.text}")
-    except Exception as e:
-        logger.warning(f"Sandbox trigger failed: {e}")
-    return False
-
-
-# --- State Machine Nodes ---
 def node_validate(state: IncidentState) -> IncidentState:
     """Validate incoming incident alert."""
     logger.info(f"State [VALIDATING] incident: {state['incident_id']}")
@@ -193,7 +24,16 @@ def node_validate(state: IncidentState) -> IncidentState:
     state["step_count"] += 1
     update_incident_status(state["incident_id"], "VALIDATING")
     return state
+''')
 
+# 3. nodes/investigate.py
+with open(os.path.join(NODES_DIR, "investigate.py"), "w", encoding="utf-8") as f:
+    f.write('''import logging
+from app.db.supabase import update_incident_status
+from app.agent.graph.states import IncidentState
+from app.agent.context_builder import packet_builder
+
+logger = logging.getLogger(__name__)
 
 def node_investigate(state: IncidentState) -> IncidentState:
     logger.info(f"State [INVESTIGATING] incident: {state['incident_id']}")
@@ -209,17 +49,25 @@ def node_investigate(state: IncidentState) -> IncidentState:
         alert_text=alert_summary
     )
 
-    # Collect evidence IDs for traceability
     state["evidence_ids"] = [e.id for e in packet.all_evidence]
-    
-    # Store the context packet markdown in logs so the dashboard and subsequent nodes can see it
     state["logs"] = packet.to_markdown()
     state["trace"] = ""
 
     update_incident_status(state["incident_id"], "INVESTIGATING")
     logger.info(f"Investigation built context packet with {len(state['evidence_ids'])} pieces of evidence.")
     return state
+''')
 
+# 4. nodes/diagnosis.py
+with open(os.path.join(NODES_DIR, "diagnosis.py"), "w", encoding="utf-8") as f:
+    f.write('''import logging
+import json
+from langchain_core.messages import SystemMessage, HumanMessage
+from app.db.supabase import update_incident_status
+from app.agent.graph.states import IncidentState
+from app.agent.graph.utils import initialize_llm, find_and_read_target_code, _calculate_evidence_confidence
+
+logger = logging.getLogger(__name__)
 
 def node_diagnose(state: IncidentState) -> IncidentState:
     """Perform root cause analysis with structured JSON output and evidence IDs."""
@@ -236,10 +84,10 @@ def node_diagnose(state: IncidentState) -> IncidentState:
 
     if llm and code_content != "// Target code file":
         prompt = (
-            f"{context_markdown}\n\n"
-            f"Available evidence IDs: {evidence_ids_str}\n"
-            f"Select only the IDs that directly support the diagnosis.\n\n"
-            f"Respond in EXACTLY this JSON format (no extra text, no markdown fences):\n"
+            f"{context_markdown}\\n\\n"
+            f"Available evidence IDs: {evidence_ids_str}\\n"
+            f"Select only the IDs that directly support the diagnosis.\\n\\n"
+            f"Respond in EXACTLY this JSON format (no extra text, no markdown fences):\\n"
             f'{{"root_cause": "<2 concise sentences identifying the exact root cause>", '
             f'"confidence": <decimal 0.0-1.0>, '
             f'"evidence": ["<ev_id_1>", "<ev_id_2>"]}}'
@@ -251,9 +99,7 @@ def node_diagnose(state: IncidentState) -> IncidentState:
             ])
             content = str(resp.content).strip()
 
-            # Try to parse structured JSON response
             try:
-                # Strip markdown fences if present
                 if content.startswith('```'):
                     content = content.split('```')[1]
                     if content.startswith('json'):
@@ -265,7 +111,6 @@ def node_diagnose(state: IncidentState) -> IncidentState:
                 confidence = float(result.get("confidence", 0.0))
                 confidence = max(0.0, min(1.0, confidence))
                 
-                # Intersect model's chosen evidence with actual available evidence
                 raw_chosen = result.get('evidence', [])
                 if isinstance(raw_chosen, list):
                     valid_chosen = [e for e in raw_chosen if e in state.get("evidence_ids", [])]
@@ -273,7 +118,6 @@ def node_diagnose(state: IncidentState) -> IncidentState:
                     
                 logger.info(f"Structured diagnosis parsed: confidence={confidence}, evidence={state['evidence_ids']}")
             except (json.JSONDecodeError, ValueError):
-                # Fallback: parse old-style text format
                 if "ROOT_CAUSE:" in content:
                     root_part = content.split("ROOT_CAUSE:")[1]
                     state["root_cause"] = root_part.split("CONFIDENCE:")[0].strip() if "CONFIDENCE:" in root_part else root_part.strip()
@@ -324,7 +168,6 @@ def node_diagnose(state: IncidentState) -> IncidentState:
         state["root_cause"] = "DIAGNOSIS_FAILED: Target code context is missing."
         return state
 
-    # Deterministic confidence if LLM didn't provide one
     if confidence < 0.1:
         confidence = _calculate_evidence_confidence(alert_summary, rel_path, code_content, state.get("root_cause", ""))
 
@@ -335,123 +178,22 @@ def node_diagnose(state: IncidentState) -> IncidentState:
         "confidence": confidence
     })
     return state
+''')
 
+# 5. nodes/remediation.py
+with open(os.path.join(NODES_DIR, "remediation.py"), "w", encoding="utf-8") as f:
+    f.write('''import logging
+import json
+import os
+import re
+import time
+from langchain_core.messages import SystemMessage, HumanMessage
+from app.db.supabase import update_incident_status
+from app.agent.graph.states import IncidentState
+from app.agent.graph.utils import initialize_llm, find_and_read_target_code, _detect_language_and_framework
+from app.agent.context_builder import packet_builder
 
-def _calculate_evidence_confidence(alert_summary: str, rel_path: str, code_content: str, root_cause: str) -> float:
-    """Calculate confidence score from evidence quality signals."""
-    score = 0.0
-    text = alert_summary.lower()
-
-    # Signal 1: Stack trace present with file + line number
-    if "route.ts:" in text or ".ts:" in text or "at POST" in text:
-        score += 0.25
-
-    # Signal 2: Known error pattern match
-    error_patterns = ["typeerror", "cannot read propert", "cannot destructure", "is not a function", "is null", "is undefined"]
-    if any(p in text for p in error_patterns):
-        score += 0.20
-
-    # Signal 3: Target file successfully resolved
-    if rel_path:
-        score += 0.15
-
-    # Signal 4: Source code contains suspected bug pattern (generic)
-    if "null" in code_content.lower() or "undefined" in code_content.lower() or "error" in code_content.lower():
-        score += 0.20
-
-    # Signal 5: Root cause is specific
-    if root_cause and len(root_cause) > 50 and "Unhandled null" not in root_cause:
-        score += 0.15
-    elif root_cause and "TypeError" in root_cause:
-        score += 0.10
-
-    # Signal 6: Endpoint explicitly mentioned in alert
-    if "/api/" in text:
-        score += 0.05
-
-    return min(score, 1.0)
-
-
-def _detect_language_and_framework(rel_path: str, code_content: str) -> Dict[str, str]:
-    """Dynamically inspect target file to determine language and framework guidelines."""
-    ext = rel_path.split(".")[-1].lower() if "." in rel_path else ""
-
-    if ext == "java":
-        return {
-            "language": "Java",
-            "framework": "Spring Boot / Java EE" if "@" in code_content or "springframework" in code_content else "Java",
-            "code_block_lang": "java",
-            "rules": (
-                "1. Target file is a Java class.\n"
-                "2. Preserve all Java package declarations, imports, annotations (e.g. `@RestController`, `@PostMapping`), and class signatures.\n"
-                "3. Use null checks (e.g. `if (obj != null)`), `Optional.ofNullable(...)`, or default fallbacks for safe property access.\n"
-                "4. Output ONLY the complete updated Java code inside a ```java ... ``` block."
-            )
-        }
-    elif ext in ("py", "python"):
-        return {
-            "language": "Python",
-            "framework": "FastAPI" if "fastapi" in code_content.lower() or "basemodel" in code_content.lower() else "Python",
-            "code_block_lang": "python",
-            "rules": (
-                "1. Target file is a Python module.\n"
-                "2. Preserve all function signatures, imports, and Pydantic schemas.\n"
-                "3. Add defensive null/None checks (`if obj is not None:`) or default fallbacks (`getattr(...)`).\n"
-                "4. Output ONLY the complete updated Python code inside a ```python ... ``` block."
-            )
-        }
-    elif ext in ("ts", "tsx", "js", "jsx"):
-        if "next/server" in code_content or "nextresponse" in code_content.lower() or "app/api/" in rel_path:
-            return {
-                "language": "TypeScript (Next.js App Router)",
-                "framework": "Next.js App Router",
-                "code_block_lang": "typescript",
-                "rules": (
-                    "1. Target file is a Next.js App Router API route (`src/app/api/.../route.ts`).\n"
-                    "2. You MUST use Next.js App Router format:\n"
-                    "   `import { NextResponse } from 'next/server';`\n"
-                    "   `export async function POST(req: Request) { ... }`\n"
-                    "   `const body = await req.json();`\n"
-                    "   `return NextResponse.json({ ... });`\n"
-                    "3. ALWAYS replace unsafe property accesses (e.g. `body.user`, `body.items[0]`, `body.customer.address`) with safe optional chaining or fallbacks (e.g. `const { email, role } = body?.user || {};` or `const email = body?.user?.email || null;`).\n"
-                    "4. DO NOT use Express.js syntax (`express`, `Router()`, `res.status()`, `res.send()`, `req.body`).\n"
-                    "5. Output ONLY the complete updated Next.js TypeScript code inside a ```typescript ... ``` block."
-                )
-            }
-        elif "express" in code_content.lower() or "router()" in code_content.lower():
-            return {
-                "language": "TypeScript (Express.js)",
-                "framework": "Express.js",
-                "code_block_lang": "typescript",
-                "rules": (
-                    "1. Target file is an Express.js router module.\n"
-                    "2. Preserve existing Express router handlers (`req: Request, res: Response`).\n"
-                    "3. Use safe optional chaining (`req.body?.user?.email`) and return `res.status(...).json(...)`.\n"
-                    "4. Output ONLY the complete updated Express TypeScript code inside a ```typescript ... ``` block."
-                )
-            }
-        else:
-            return {
-                "language": "TypeScript / JavaScript",
-                "framework": "Generic TS/JS",
-                "code_block_lang": "typescript",
-                "rules": (
-                    "1. Preserve existing module exports and function signatures.\n"
-                    "2. Add optional chaining `?.` or default fallbacks `||` for property dereferences.\n"
-                    "3. Output ONLY updated code inside a ```typescript ... ``` block."
-                )
-            }
-    else:
-        return {
-            "language": ext.upper() if ext else "Generic",
-            "framework": "Generic",
-            "code_block_lang": ext if ext else "text",
-            "rules": (
-                "1. Preserve existing code structure and signatures.\n"
-                "2. Fix unsafe property dereferences safely."
-            )
-        }
-
+logger = logging.getLogger(__name__)
 
 def node_fix(state: IncidentState) -> IncidentState:
     """Generate candidate code fix patch with retrieval budget and evidence tracing."""
@@ -468,7 +210,6 @@ def node_fix(state: IncidentState) -> IncidentState:
         for attempt in range(1, 4):
             try:
                 logger.info(f"LLM fix generation attempt {attempt}/3 for {rel_path}")
-                # Inject Verified Human Feedback (Incident Resolution Memory)
                 kb_path = "knowledge_base.json"
                 kb_feedback = ""
                 if os.path.exists(kb_path):
@@ -477,11 +218,11 @@ def node_fix(state: IncidentState) -> IncidentState:
                             kb = json.load(f)
                             if kb:
                                 feedbacks = [k["feedback"] for k in kb[-3:]]
-                                kb_feedback = "\n".join([f"- {fb}" for fb in feedbacks])
+                                kb_feedback = "\\n".join([f"- {fb}" for fb in feedbacks])
                     except Exception:
                         pass
 
-                human_feedback_instruction = f"6. CRITICAL TEAM FEEDBACK (Incident Resolution Memory): Ensure your fix follows this past PR review feedback:\n{kb_feedback}\n" if kb_feedback else ""
+                human_feedback_instruction = f"6. CRITICAL TEAM FEEDBACK (Incident Resolution Memory): Ensure your fix follows this past PR review feedback:\\n{kb_feedback}\\n" if kb_feedback else ""
 
                 packet = packet_builder.assemble_packet(
                     incident_id=state["incident_id"],
@@ -493,13 +234,13 @@ def node_fix(state: IncidentState) -> IncidentState:
                 evidence_id_list = [e.id for e in packet.all_evidence[:3]]
 
                 prompt = (
-                    f"You are a senior Site Reliability & {meta['language']} Engineer AI agent.\n"
-                    f"{packet.to_markdown()}\n\n"
-                    f"STRICT {meta['framework'].upper()} FIX GUIDELINES:\n"
-                    f"{meta['rules']}\n"
-                    f"5. Do NOT output unified diffs or git diff markers (`@@ -... @@`).\n"
+                    f"You are a senior Site Reliability & {meta['language']} Engineer AI agent.\\n"
+                    f"{packet.to_markdown()}\\n\\n"
+                    f"STRICT {meta['framework'].upper()} FIX GUIDELINES:\\n"
+                    f"{meta['rules']}\\n"
+                    f"5. Do NOT output unified diffs or git diff markers (`@@ -... @@`).\\n"
                     f"{human_feedback_instruction}"
-                    f"\nEvidence IDs used: {json.dumps(evidence_id_list)}"
+                    f"\\nEvidence IDs used: {json.dumps(evidence_id_list)}"
                 )
                 resp = llm.invoke([SystemMessage(content=f"You are an elite {meta['framework']} SRE AI agent."), HumanMessage(content=prompt)])
                 content_str = str(resp.content).strip()
@@ -512,12 +253,10 @@ def node_fix(state: IncidentState) -> IncidentState:
                 else:
                     candidate = content_str.strip()
 
-                # Post-processing: strip appended modules or diff markers
                 if "// Related Module File:" in candidate:
                     candidate = candidate.split("// Related Module File:")[0].strip()
-                candidate = re.sub(r'@@\s*-\d+,\d+\s+\+\d+,\d+\s*@@', '', candidate).strip()
+                candidate = re.sub(r'@@\\s*-\\d+,\\d+\\s+\\+\\d+,\\d+\\s*@@', '', candidate).strip()
 
-                # Framework-aware validation
                 has_safety = "?." in candidate or "if (" in candidate or "if " in candidate or "||" in candidate or "try" in candidate or "Optional" in candidate
                 if meta["framework"] == "Next.js App Router":
                     is_valid_framework = "nextresponse" in candidate.lower() and "express" not in candidate.lower()
@@ -555,7 +294,19 @@ def node_fix(state: IncidentState) -> IncidentState:
         "candidate_patch": state["candidate_patch"]
     })
     return state
+''')
 
+# 6. nodes/verification.py
+with open(os.path.join(NODES_DIR, "verification.py"), "w", encoding="utf-8") as f:
+    f.write('''import logging
+import json
+import os
+from langchain_core.messages import SystemMessage, HumanMessage
+from app.db.supabase import update_incident_status
+from app.agent.graph.states import IncidentState
+from app.agent.graph.utils import initialize_llm, find_and_read_target_code, trigger_sandbox_test
+
+logger = logging.getLogger(__name__)
 
 def node_test(state: IncidentState) -> IncidentState:
     """Validate candidate patch using static checks + optional sandbox trigger."""
@@ -572,24 +323,21 @@ def node_test(state: IncidentState) -> IncidentState:
 
     validation_errors = []
 
-    # Validation 1: Balanced braces
     open_braces = patch_code.count("{")
     close_braces = patch_code.count("}")
     if open_braces != close_braces:
         validation_errors.append(f"FAIL: Unbalanced braces (open={open_braces}, close={close_braces})")
 
-    # Validation 2: Code length
     if len(patch_code) < 50:
         validation_errors.append(f"FAIL: Patch too short ({len(patch_code)} chars), likely a placeholder")
 
-    # Validation 3: LLM syntax verification
     llm = initialize_llm()
     if llm and len(validation_errors) == 0:
         try:
             verify_prompt = (
-                f"You are a strict syntax checker for the generated code patch.\n"
-                f"Check this code for severe syntax errors ONLY (e.g. missing semicolons, invalid tokens, unclosed parentheses).\n"
-                f"```\n{patch_code}\n```\n"
+                f"You are a strict syntax checker for the generated code patch.\\n"
+                f"Check this code for severe syntax errors ONLY (e.g. missing semicolons, invalid tokens, unclosed parentheses).\\n"
+                f"```\\n{patch_code}\\n```\\n"
                 f"Respond with EXACTLY one word: PASS or FAIL. If FAIL, add a colon and the error."
             )
             resp = llm.invoke([SystemMessage(content="You are a syntax checker."), HumanMessage(content=verify_prompt)])
@@ -601,7 +349,6 @@ def node_test(state: IncidentState) -> IncidentState:
         except Exception as e:
             logger.warning(f"LLM syntax verification skipped: {e}")
 
-    # Trigger GitHub Actions sandbox test (non-blocking)
     if len(validation_errors) == 0:
         alert_summary = state.get("alert_summary", "")
         rel_path, _ = find_and_read_target_code(alert_summary)
@@ -618,33 +365,34 @@ def node_test(state: IncidentState) -> IncidentState:
             logger.info(f"GitHub Actions sandbox test triggered for incident {state['incident_id']}")
 
     if validation_errors:
-        state["test_results"] = "VALIDATION FAILED:\n" + "\n".join(validation_errors)
+        state["test_results"] = "VALIDATION FAILED:\\n" + "\\n".join(validation_errors)
         logger.warning(f"Patch validation FAILED for incident {state['incident_id']}: {validation_errors}")
     else:
         state["test_results"] = (
-            f"[REAL VALIDATOR] Structural checks PASSED.\n"
-            f"Brace balance: VERIFIED ({open_braces} pairs).\n"
-            f"Code length: {len(patch_code)} chars (healthy).\n"
-            f"LLM syntax check: {'PASSED' if llm else 'SKIPPED (no LLM)'}.\n"
-            f"Evidence trail: {json.dumps(state.get('evidence_ids', [])[:3])}\n"
+            f"[REAL VALIDATOR] Structural checks PASSED.\\n"
+            f"Brace balance: VERIFIED ({open_braces} pairs).\\n"
+            f"Code length: {len(patch_code)} chars (healthy).\\n"
+            f"LLM syntax check: {'PASSED' if llm else 'SKIPPED (no LLM)'}.\\n"
+            f"Evidence trail: {json.dumps(state.get('evidence_ids', [])[:3])}\\n"
             f"Verdict: Awaiting async sandbox execution results."
         )
         logger.info(f"Patch validation PASSED for incident {state['incident_id']}")
 
     update_incident_status(state["incident_id"], "TESTING")
     return state
+''')
 
+# 7. nodes/create_pr.py
+with open(os.path.join(NODES_DIR, "create_pr.py"), "w", encoding="utf-8") as f:
+    f.write('''import logging
+import json
+import os
+from app.db.supabase import update_incident_status
+from app.agent.graph.states import IncidentState
+from app.agent.graph.utils import find_and_read_target_code
+from app.agent.tools import create_github_pr
 
-def node_failed(state: IncidentState) -> IncidentState:
-    """Handle incident resolution failure."""
-    logger.info(f"State [FAILED] incident: {state['incident_id']}")
-    state["status"] = "FAILED"
-    state["step_count"] += 1
-    update_incident_status(state["incident_id"], "FAILED", {
-        "candidate_patch": state.get("candidate_patch", "// Fix generation failed.")
-    })
-    return state
-
+logger = logging.getLogger(__name__)
 
 def node_create_pr(state: IncidentState) -> IncidentState:
     """Create GitHub PR with evidence trail and request human review."""
@@ -658,25 +406,25 @@ def node_create_pr(state: IncidentState) -> IncidentState:
 
     code_preview = ""
     if state.get("fixed_code"):
-        code_preview = f"### ⚡ Applied AI Fix (`{rel_path}`)\n```\n{state['fixed_code']}\n```\n\n"
+        code_preview = f"### ⚡ Applied AI Fix (`{rel_path}`)\\n```\\n{state['fixed_code']}\\n```\\n\\n"
 
     evidence_trail = ""
     if state.get("evidence_ids"):
-        evidence_trail = "### 📍 Evidence Trail\n" + "\n".join([f"- `{eid}`" for eid in state["evidence_ids"][:5]]) + "\n\n"
+        evidence_trail = "### 📍 Evidence Trail\\n" + "\\n".join([f"- `{eid}`" for eid in state["evidence_ids"][:5]]) + "\\n\\n"
 
     pr_body = (
-        f"## 🚨 IncidentPilot Autonomous Resolution Report\n\n"
-        f"**Service Name:** `{state['service_name']}`\n"
-        f"**Incident ID:** `{state['incident_id']}`\n"
-        f"**Target File:** `{rel_path}`\n"
-        f"**Confidence:** `{state.get('confidence', 0.0):.0%}`\n\n"
-        f"### 🔍 Root Cause Analysis (Groq Llama 3.3 70B)\n"
-        f"{root_cause}\n\n"
+        f"## 🚨 IncidentPilot Autonomous Resolution Report\\n\\n"
+        f"**Service Name:** `{state['service_name']}`\\n"
+        f"**Incident ID:** `{state['incident_id']}`\\n"
+        f"**Target File:** `{rel_path}`\\n"
+        f"**Confidence:** `{state.get('confidence', 0.0):.0%}`\\n\\n"
+        f"### 🔍 Root Cause Analysis (Groq Llama 3.3 70B)\\n"
+        f"{root_cause}\\n\\n"
         f"{evidence_trail}"
         f"{code_preview}"
-        f"### ✅ Verification & Testing\n"
-        f"Validated patch syntax and null-check safety. All automated safety checks passed.\n"
-        f"Tool calls used: {state.get('tool_calls_used', 0)}\n"
+        f"### ✅ Verification & Testing\\n"
+        f"Validated patch syntax and null-check safety. All automated safety checks passed.\\n"
+        f"Tool calls used: {state.get('tool_calls_used', 0)}\\n"
     )
 
     pr_raw = create_github_pr.invoke({
@@ -698,19 +446,48 @@ def node_create_pr(state: IncidentState) -> IncidentState:
         "pr_url": state["pr_url"]
     })
     return state
+''')
 
+# 8. nodes/failed.py
+with open(os.path.join(NODES_DIR, "failed.py"), "w") as f:
+    f.write('''import logging
+from app.db.supabase import update_incident_status
+from app.agent.graph.states import IncidentState
 
-# --- Conditional Router ---
-def route_after_test(state: IncidentState) -> str:
-    test_res = state.get("test_results", "").lower()
-    if "fail" in test_res or "error" in test_res:
-        if state["fix_attempts"] < settings.MAX_FIX_ATTEMPTS and state.get("fixed_code"):
-            return "fix"
-        return "failed"
-    return "create_pr"
+logger = logging.getLogger(__name__)
 
+def node_failed(state: IncidentState) -> IncidentState:
+    """Handle incident resolution failure."""
+    logger.info(f"State [FAILED] incident: {state['incident_id']}")
+    state["status"] = "FAILED"
+    state["step_count"] += 1
+    update_incident_status(state["incident_id"], "FAILED", {
+        "candidate_patch": state.get("candidate_patch", "// Fix generation failed.")
+    })
+    return state
+''')
 
-# --- Build State Graph ---
+# 9. workflow.py
+with open(os.path.join(BASE_DIR, "workflow.py"), "w") as f:
+    f.write('''import logging
+try:
+    from langgraph.graph import StateGraph, END
+except ImportError:
+    StateGraph = None
+    END = "END"
+
+from app.agent.graph.states import IncidentState
+from app.agent.graph.nodes.validate import node_validate
+from app.agent.graph.nodes.investigate import node_investigate
+from app.agent.graph.nodes.diagnosis import node_diagnose
+from app.agent.graph.nodes.remediation import node_fix
+from app.agent.graph.nodes.verification import node_test
+from app.agent.graph.nodes.failed import node_failed
+from app.agent.graph.nodes.create_pr import node_create_pr
+from app.agent.graph.routing import route_after_test
+
+logger = logging.getLogger(__name__)
+
 if StateGraph is not None:
     workflow = StateGraph(IncidentState)
     workflow.add_node("validate", node_validate)
@@ -729,7 +506,6 @@ if StateGraph is not None:
         "failed": "failed"
     })
     workflow.add_edge("fix", "test")
-
     workflow.add_conditional_edges("test", route_after_test, {
         "fix": "fix",
         "create_pr": "create_pr",
@@ -740,7 +516,6 @@ if StateGraph is not None:
     orchestrator_graph = workflow.compile()
 else:
     orchestrator_graph = None
-
 
 def run_incident_orchestrator(incident_id: str, service_name: str, summary: str) -> IncidentState:
     """Execute the full agentic incident resolution pipeline."""
@@ -766,7 +541,6 @@ def run_incident_orchestrator(incident_id: str, service_name: str, summary: str)
     if orchestrator_graph:
         return orchestrator_graph.invoke(initial_state)
 
-    # Fallback execution sequence
     state = node_validate(initial_state)
     state = node_investigate(state)
     state = node_diagnose(state)
@@ -777,3 +551,8 @@ def run_incident_orchestrator(incident_id: str, service_name: str, summary: str)
     else:
         state = node_create_pr(state)
     return state
+''')
+
+# 10. __init__.py
+with open(os.path.join(BASE_DIR, "__init__.py"), "w") as f:
+    f.write("")

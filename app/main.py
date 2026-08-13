@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.db.supabase import get_incidents, get_incident_by_id, create_incident, update_incident_status, supabase_client
-from app.agent.orchestrator import run_incident_orchestrator
+from app.agent.graph.workflow import run_incident_orchestrator
 from app.agent.knowledge_service import knowledge_service
 import os
 from datetime import datetime, timezone

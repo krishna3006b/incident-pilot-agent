@@ -18,15 +18,6 @@ on:
       callback_url:
         description: 'Backend callback URL'
         required: false
-      setup_command:
-        description: 'Command to setup environment (e.g. actions/setup-node)'
-        required: false
-      build_command:
-        description: 'Command to build the project'
-        required: false
-      test_command:
-        description: 'Command to run tests'
-        required: false
 
 jobs:
   validate:
@@ -38,9 +29,6 @@ jobs:
       PATCH_CODE: ${{ github.event.client_payload.patch_code || github.event.inputs.patch_code }}
       INCIDENT_ID: ${{ github.event.client_payload.incident_id || github.event.inputs.incident_id }}
       CALLBACK_URL: ${{ github.event.client_payload.callback_url || github.event.inputs.callback_url }}
-      SETUP_COMMAND: ${{ github.event.client_payload.setup_command || github.event.inputs.setup_command || 'npm install' }}
-      BUILD_COMMAND: ${{ github.event.client_payload.build_command || github.event.inputs.build_command || 'npx tsc --noEmit' }}
-      TEST_COMMAND: ${{ github.event.client_payload.test_command || github.event.inputs.test_command || 'npm test' }}
 
     steps:
       - name: Checkout Target Repository
@@ -59,33 +47,21 @@ jobs:
 
       - name: Setup & Install Dependencies
         run: |
-          if [ -n "$SETUP_COMMAND" ]; then
-            eval "$SETUP_COMMAND 2>/dev/null || echo 'Setup command failed or returned non-zero, continuing...'"
-          fi
+          npm install 2>/dev/null || echo 'Setup command failed or returned non-zero, continuing...'
 
       - name: Build / Compile Check
         id: build_check
         continue-on-error: true
         run: |
-          if [ -n "$BUILD_COMMAND" ]; then
-            eval "$BUILD_COMMAND 2>&1 | head -50"
-            echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
-          else
-            echo "No build command specified."
-            echo "BUILD_EXIT_CODE=0" >> $GITHUB_OUTPUT
-          fi
+          npx tsc --noEmit 2>&1 | head -50
+          echo "BUILD_EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
 
       - name: Run Test Suite
         id: test_run
         continue-on-error: true
         run: |
-          if [ -n "$TEST_COMMAND" ]; then
-            eval "$TEST_COMMAND 2>&1 | tail -30"
-            echo "TEST_EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
-          else
-            echo "No test command specified."
-            echo "TEST_EXIT_CODE=0" >> $GITHUB_OUTPUT
-          fi
+          npm test 2>&1 | tail -30
+          echo "TEST_EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
 
       - name: Determine Verdict
         id: verdict

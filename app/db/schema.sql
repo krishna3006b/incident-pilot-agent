@@ -205,18 +205,16 @@ RETURNS TABLE (
     LIMIT match_count;
 $$ LANGUAGE sql;
 
--- ============================================================
--- SEED DATA
--- ============================================================
-INSERT INTO repository_metadata (name, repo_url, language, framework, build_system, default_branch, build_command, test_command)
-VALUES (
-    'ordering-system',
-    'https://github.com/krishna3006b/ordering-system',
-    'TypeScript',
-    'Next.js',
-    'npm',
-    'main',
-    'npm run build',
-    'npm test'
-)
-ON CONFLICT (name) DO NOTHING;
+-- SEED DATA (uncomment and customize for your repository)
+-- INSERT INTO repository_metadata (name, repo_url, language, framework, build_system, default_branch, build_command, test_command)
+-- VALUES (
+--     'your-repo-name',
+--     'https://github.com/your-username/your-repo',
+--     'TypeScript',
+--     'Next.js',
+--     'npm',
+--     'main',
+--     'npm run build',
+--     'npm test'
+-- )
+-- ON CONFLICT (name) DO NOTHING;

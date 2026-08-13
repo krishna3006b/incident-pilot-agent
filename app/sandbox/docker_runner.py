@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 def run_in_docker_sandbox(
     command: str,
-    repository: str = "payment-service",
+    repository: str = "",
     patch: str = "",
     timeout_seconds: int = 30,
     network_disabled: bool = True
@@ -49,13 +49,10 @@ def run_in_docker_sandbox(
         logger.warning(f"Docker sandbox execution unavailable ({e}). Running dynamic local patch validator.")
         
         # Local patch validator when Docker daemon is not running in host environment
-        has_optional_chaining = "?." in patch or "Optional" in patch or "if" in patch or "try" in patch
-        is_success = has_optional_chaining and "error" not in patch.lower()
-        
         return {
-            "success": is_success,
-            "exit_code": 0 if is_success else 1,
-            "stdout": f"[PATCH VALIDATOR] Validated candidate fix patch for '{repository}'.\nPatch applied safely.\nNull-check safety verification: PASSED.\nSyntax check: CLEAN.",
-            "stderr": "" if is_success else "Validation Warning: Unhandled unsafe dereference detected in patch.",
-            "execution_type": "dynamic_local_validation"
+            "success": False,
+            "exit_code": 1,
+            "stdout": "[SANDBOX UNAVAILABLE] Docker daemon not running. Cannot validate patch locally.",
+            "stderr": "Docker is required for isolated patch validation.",
+            "execution_type": "unavailable"
         }

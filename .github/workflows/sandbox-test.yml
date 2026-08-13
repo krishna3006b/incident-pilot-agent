@@ -8,7 +8,7 @@ on:
       target_file:
         description: 'File path to patch'
         required: true
-        default: 'src/app/api/checkout/route.ts'
+        default: ''
       patch_code:
         description: 'Patch code content'
         required: true
@@ -46,7 +46,7 @@ jobs:
       - name: Checkout Target Repository
         uses: actions/checkout@v4
         with:
-          repository: 'krishna3006b/ordering-system'
+          repository: ${{ github.event.client_payload.target_repo || 'krishna3006b/ordering-system' }}
           ref: ${{ github.event.client_payload.target_branch || github.event.inputs.target_branch || 'main' }}
 
       - name: Apply AI Candidate Patch

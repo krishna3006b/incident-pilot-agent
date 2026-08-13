@@ -23,15 +23,7 @@ if create_client and settings.SUPABASE_URL and settings.SUPABASE_KEY:
 # In-memory store for fallback mode when Supabase is not configured
 IN_MEMORY_INCIDENTS: List[Dict[str, Any]] = []
 
-IN_MEMORY_KB: List[Dict[str, Any]] = [
-    {
-        "id": "22222222-2222-2222-2222-222222222222",
-        "document_type": "runbook",
-        "title": "Payment Service Null Address Troubleshooting",
-        "content": "When payment-service returns 500 during checkout, inspect Customer.getAddress() nullable fields introduced in v1.8.2 migration.",
-        "resolution_status": "VERIFIED"
-    }
-]
+IN_MEMORY_KB: List[Dict[str, Any]] = []
 
 def get_incidents() -> List[Dict[str, Any]]:
     """Fetch all incidents from Supabase or fallback store."""

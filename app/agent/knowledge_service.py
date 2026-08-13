@@ -1,3 +1,4 @@
+import re
 import logging
 from typing import List, Dict, Any, Optional
 from app.db.supabase import supabase_client, IN_MEMORY_KB, get_incidents
@@ -13,7 +14,7 @@ class RepositoryKnowledgeService:
     historical resolution memory, and runbooks.
     """
 
-    def get_manifest(self, repo_id: str = "ordering-system") -> Dict[str, Any]:
+    def get_manifest(self, repo_id: str = "") -> Dict[str, Any]:
         """Fetch repository metadata manifest (language, framework, indexed stats)."""
         if supabase_client:
             try:
@@ -54,15 +55,15 @@ class RepositoryKnowledgeService:
         return {
             'repository_id': repo_id,
             'name': repo_id,
-            'language': 'TypeScript',
-            'framework': 'Next.js',
+            'language': 'Unknown',
+            'framework': 'Unknown',
             'last_indexed_sha': None,
             'symbol_count': 0,
             'embedding_count': 0,
             'status': 'Not Indexed'
         }
 
-    def search_code(self, query: str, repo_id: str = "ordering-system", top_k: int = 5) -> List[Dict[str, Any]]:
+    def search_code(self, query: str, repo_id: str = "", top_k: int = 5) -> List[Dict[str, Any]]:
         """Search code embeddings via Supabase pgvector RPC."""
         if supabase_client:
             try:
@@ -94,7 +95,7 @@ class RepositoryKnowledgeService:
         # In-memory fallback if no DB
         return []
 
-    def get_symbol(self, symbol_name: str, repo_id: str = "ordering-system") -> Optional[Dict[str, Any]]:
+    def get_symbol(self, symbol_name: str, repo_id: str = "") -> Optional[Dict[str, Any]]:
         """Fetch a specific symbol definition by name."""
         if supabase_client:
             try:
@@ -105,7 +106,7 @@ class RepositoryKnowledgeService:
                 logger.error(f"Error fetching symbol {symbol_name}: {e}")
         return None
 
-    def get_dependencies(self, symbol_name: str, repo_id: str = "ordering-system") -> List[Dict[str, Any]]:
+    def get_dependencies(self, symbol_name: str, repo_id: str = "") -> List[Dict[str, Any]]:
         """Fetch outgoing dependency edges for a symbol (what this symbol calls/imports)."""
         if supabase_client:
             try:
@@ -120,7 +121,7 @@ class RepositoryKnowledgeService:
 
         return []
 
-    def get_dependents(self, symbol_name: str, repo_id: str = "ordering-system") -> List[Dict[str, Any]]:
+    def get_dependents(self, symbol_name: str, repo_id: str = "") -> List[Dict[str, Any]]:
         """Fetch incoming dependency edges for a symbol (what calls/imports this symbol)."""
         if supabase_client:
             try:

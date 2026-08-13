@@ -172,11 +172,12 @@ async def handle_slack_webhook(request: Request, background_tasks: BackgroundTas
         logger.info(f"Ignoring non-alert Slack message: {text}")
         return {"status": "IGNORED", "reason": "Non-incident message"}
 
-    service_name = "payment-service"
-    if "order" in text.lower():
-        service_name = "ordering-system"
-    elif "auth" in text.lower():
-        service_name = "auth-service"
+    service_name = "unknown-service"
+    # Try to extract service name from alert text
+    for word in text.lower().split():
+        if "-service" in word or "-system" in word:
+            service_name = word.strip('*:.')
+            break
 
     incident_id = str(uuid.uuid4())
     inc_num = 186 + len(get_incidents())
@@ -302,16 +303,16 @@ def get_knowledge_stats():
     Returns live repository knowledge index statistics.
     Used by the dashboard's Repository Knowledge Status card.
     """
-    manifest = knowledge_service.get_manifest(repo_id="ordering-system")
+    manifest = knowledge_service.get_manifest()
     return {
-        "repository": manifest.get("name", "ordering-system"),
-        "language": manifest.get("language", "TypeScript"),
-        "framework": manifest.get("framework", "Next.js"),
+        "repository": manifest.get("name", "unknown"),
+        "language": manifest.get("language", "Unknown"),
+        "framework": manifest.get("framework", "Unknown"),
         "last_indexed_sha": manifest.get("last_indexed_sha"),
         "symbol_count": manifest.get("symbol_count", 0),
         "embedding_count": manifest.get("embedding_count", 0),
         "status": manifest.get("status", "Not Indexed"),
-        "knowledge_version": "kv-42"
+        "knowledge_version": manifest.get("last_indexed_sha", "not-indexed")[:8] if manifest.get("last_indexed_sha") else "not-indexed"
     }
 
 

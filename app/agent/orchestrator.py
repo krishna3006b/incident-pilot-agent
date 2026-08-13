@@ -108,7 +108,7 @@ def find_and_read_target_code(alert_summary: str):
         rel_path = ""
 
     github_token = os.getenv("GITHUB_TOKEN")
-    github_repo = os.getenv("GITHUB_REPO", "krishna3006b/ordering-system")
+    github_repo = os.getenv("GITHUB_REPO", "")
 
     def fetch_file_content(path: str) -> str:
         if github_token and github_repo:
@@ -150,7 +150,7 @@ def find_and_read_target_code(alert_summary: str):
 def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, target_branch: str = "main", callback_url: str = "") -> bool:
     """Trigger GitHub Actions sandbox-test.yml via repository_dispatch on agent repo."""
     github_token = os.getenv("GITHUB_TOKEN")
-    agent_repo = os.getenv("AGENT_REPO", "krishna3006b/incident-pilot-agent")
+    agent_repo = os.getenv("AGENT_REPO", "")
 
     if not github_token:
         logger.warning("No GITHUB_TOKEN set, skipping sandbox trigger.")
@@ -363,7 +363,7 @@ def _calculate_evidence_confidence(alert_summary: str, rel_path: str, code_conte
         score += 0.20
 
     # Signal 3: Target file successfully resolved
-    if rel_path != "src/app/api/checkout/route.ts" or "checkout" in text:
+    if rel_path:
         score += 0.15
 
     # Signal 4: Source code contains suspected bug pattern (generic)
@@ -669,7 +669,7 @@ def node_create_pr(state: IncidentState) -> IncidentState:
 
     code_preview = ""
     if state.get("fixed_code"):
-        code_preview = f"### ⚡ Applied AI Fix (`{rel_path}`)\n```typescript\n{state['fixed_code']}\n```\n\n"
+        code_preview = f"### ⚡ Applied AI Fix (`{rel_path}`)\n```\n{state['fixed_code']}\n```\n\n"
 
     evidence_trail = ""
     if state.get("evidence_ids"):
@@ -699,9 +699,11 @@ def node_create_pr(state: IncidentState) -> IncidentState:
 
     try:
         pr_json = json.loads(pr_raw)
-        state["pr_url"] = pr_json.get("pr_url", "https://github.com/krishna3006b/ordering-system/pulls")
+        github_repo = os.getenv("GITHUB_REPO", "")
+        state["pr_url"] = pr_json.get("pr_url", f"https://github.com/{github_repo}/pulls" if github_repo else "")
     except Exception:
-        state["pr_url"] = "https://github.com/krishna3006b/ordering-system/pulls"
+        github_repo = os.getenv("GITHUB_REPO", "")
+        state["pr_url"] = f"https://github.com/{github_repo}/pulls" if github_repo else ""
 
     update_incident_status(state["incident_id"], "PR_READY", {
         "pr_url": state["pr_url"]

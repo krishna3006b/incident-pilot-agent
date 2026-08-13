@@ -6,11 +6,15 @@ on:
       repository_id:
         description: 'Repository ID in IncidentPilot'
         required: true
-        default: 'ordering-system'
+        default: ''
       commit_sha:
         description: 'Commit SHA to index'
         required: false
         default: 'HEAD'
+      target_repo:
+        description: 'GitHub owner/repo slug of target repository'
+        required: false
+        default: ''
   push:
     branches: [ master, main ]
 
@@ -23,10 +27,10 @@ jobs:
         with:
           path: agent_code
 
-      - name: Checkout Target Repository (ordering-system)
+      - name: Checkout Target Repository
         uses: actions/checkout@v4
         with:
-          repository: 'krishna3006b/ordering-system'
+          repository: ${{ github.event.inputs.target_repo || 'krishna3006b/ordering-system' }}
           path: target_repo
 
       - name: Set up Python
@@ -47,7 +51,7 @@ jobs:
         run: |
           python -c "
           from app.agent.indexer import RepositoryIndexer
-          repo_id = '${{ github.event.inputs.repository_id }}' if '${{ github.event.inputs.repository_id }}' else 'ordering-system'
+          repo_id = '${{ github.event.inputs.repository_id }}' if '${{ github.event.inputs.repository_id }}' else ''
           commit_sha = '${{ github.event.inputs.commit_sha }}' if '${{ github.event.inputs.commit_sha }}' else 'HEAD'
           indexer = RepositoryIndexer('target_repo', repo_id, commit_sha)
           res = indexer.index_repository()

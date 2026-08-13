@@ -86,7 +86,7 @@ def search_code(repository: str, query: str) -> str:
                         try:
                             with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                                 for idx, line in enumerate(f, 1):
-                                    if query.lower() in line.lower() or "customer" in query.lower() or "address" in query.lower():
+                                    if query.lower() in line.lower():
                                         results.append({
                                             "filepath": rel_path,
                                             "line_number": idx,
@@ -95,13 +95,6 @@ def search_code(repository: str, query: str) -> str:
                         except Exception:
                             pass
     
-    if not results:
-        results.append({
-            "filepath": "target_app/src/app/api/checkout/route.ts",
-            "line_number": 9,
-            "snippet": 'const city = body.customer.address.city;'
-        })
-        
     return json.dumps(results[:5], indent=2)
 
 @tool
@@ -125,12 +118,6 @@ def read_file(repository: str, filepath: str) -> str:
                 return f.read()
         except Exception as e:
             logger.warning(f"Error reading file {alt_path}: {e}")
-
-    # Fallback to direct checkout route
-    route_path = os.path.join(base_dir, "target_app", "src", "app", "api", "checkout", "route.ts")
-    if os.path.exists(route_path):
-        with open(route_path, "r", encoding="utf-8") as f:
-            return f.read()
 
     return '// Target file not found'
 
@@ -163,10 +150,10 @@ def get_llm():
 
 @tool
 def create_github_pr(title: str, body: str, target_file: str = "", patch: str = "") -> str:
-    """Create GitHub Pull Request on ordering-system repository with candidate fix."""
+    """Create GitHub Pull Request on target repository with candidate fix."""
     try:
         github_token = os.getenv("GITHUB_TOKEN")
-        github_repo = os.getenv("GITHUB_REPO", "krishna3006b/ordering-system")
+        github_repo = os.getenv("GITHUB_REPO", "")
         
         headers = {
             "Authorization": f"Bearer {github_token}",
@@ -208,15 +195,7 @@ def create_github_pr(title: str, body: str, target_file: str = "", patch: str = 
                 "message": f"Branch creation error: {ref_resp.text}"
             })
 
-        target_file_path = target_file if target_file else "src/app/api/checkout/route.ts"
-        text_meta = (title + " " + body).lower()
-        if not target_file:
-            if "discount" in text_meta or "price" in text_meta:
-                target_file_path = "src/app/api/discount/route.ts"
-            elif "inventory" in text_meta or "stock" in text_meta:
-                target_file_path = "src/app/api/inventory/route.ts"
-            elif "user" in text_meta or "profile" in text_meta:
-                target_file_path = "src/app/api/user/profile/route.ts"
+        target_file_path = target_file if target_file else ""
 
         import base64
         
@@ -231,7 +210,7 @@ def create_github_pr(title: str, body: str, target_file: str = "", patch: str = 
         if file_resp.status_code == 200:
             file_sha = file_resp.json().get("sha")
 
-        fixed_code = patch if (patch and len(patch) > 50 and ("export async function" in patch or "NextResponse" in patch)) else ""
+        fixed_code = patch if (patch and len(patch) > 50) else ""
         if not fixed_code:
             llm = get_llm()
             if llm and file_resp.status_code == 200:

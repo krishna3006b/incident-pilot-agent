@@ -368,7 +368,17 @@ async def handle_sandbox_result(request: Request):
     logger.info(f"Sandbox result for run {sandbox_run_id} (incident {incident_id}): verdict={verdict}")
 
     if sandbox_run_id:
-        from app.db.supabase import update_sandbox_run
+        from app.db.supabase import get_sandbox_run, update_sandbox_run
+        
+        run_record = get_sandbox_run(sandbox_run_id)
+        if not run_record:
+            logger.warning(f"Webhook received for unknown sandbox run: {sandbox_run_id}")
+            raise HTTPException(status_code=404, detail="Sandbox run not found")
+            
+        if run_record.get("incident_id") != incident_id:
+            logger.warning(f"Webhook incident_id mismatch for run {sandbox_run_id}")
+            raise HTTPException(status_code=403, detail="Incident ID mismatch")
+            
         update_sandbox_run(sandbox_run_id, {
             "status": verdict,
             "verdict": verdict,

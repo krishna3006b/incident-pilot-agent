@@ -157,6 +157,22 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 );
 
 -- ============================================================
+-- SANDBOX RUNS (tracks async GitHub Actions executions)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS sandbox_runs (
+    id              TEXT PRIMARY KEY,
+    incident_id     UUID REFERENCES incidents(id) ON DELETE CASCADE,
+    status          TEXT NOT NULL DEFAULT 'PENDING',
+    verdict         TEXT,
+    run_url         TEXT,
+    github_run_id   TEXT,
+    attempt         INT DEFAULT 1,
+    started_at      TIMESTAMPTZ DEFAULT now(),
+    completed_at    TIMESTAMPTZ,
+    error           TEXT
+);
+
+-- ============================================================
 -- KNOWLEDGE BASE (runbooks, past resolutions)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS knowledge_base (

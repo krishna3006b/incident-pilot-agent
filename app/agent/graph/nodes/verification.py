@@ -88,16 +88,20 @@ def node_test(state: IncidentState) -> IncidentState:
                 status = run.get("status", "PENDING")
                 
                 if status == "FAIL":
+                    state["sandbox_status"] = "FAIL"
                     validation_errors.append("FAIL: Sandbox execution completed but tests failed. Patch is incorrect.")
                     sandbox_resolved = True
                     break
                     
                 if status == "SYSTEM_FAILED":
+                    state["sandbox_status"] = "SYSTEM_FAILED"
                     validation_errors.append("FAIL: Sandbox infrastructure error (timeout or internal crash).")
                     sandbox_resolved = True
                     break
                     
                 if status == "PASS":
+                    state["sandbox_status"] = "PASS"
+                    state["test_results"] = "SANDBOX_PASS"
                     logger.info(f"Async sandbox webhook returned PASS for run {sandbox_run_id}")
                     sandbox_resolved = True
                     break
@@ -105,6 +109,7 @@ def node_test(state: IncidentState) -> IncidentState:
             if not sandbox_resolved:
                 from app.db.supabase import update_sandbox_run
                 update_sandbox_run(sandbox_run_id, {"status": "TIMEOUT"})
+                state["sandbox_status"] = "TIMEOUT"
                 validation_errors.append("FAIL: Sandbox execution timed out after 3 minutes.")
 
     if validation_errors:

@@ -12,6 +12,7 @@ class IncidentState(TypedDict):
     fixed_code: Optional[str]
     confidence: Optional[float]
     test_results: str
+    sandbox_status: str
     pr_url: str
     step_count: int
     fix_attempts: int

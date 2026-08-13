@@ -18,7 +18,11 @@ class RepositoryKnowledgeService:
         """Fetch repository metadata manifest (language, framework, indexed stats)."""
         if supabase_client:
             try:
-                res = supabase_client.table('repository_metadata').select('*').eq('name', repo_id).execute()
+                if repo_id:
+                    res = supabase_client.table('repository_metadata').select('*').eq('name', repo_id).execute()
+                else:
+                    res = supabase_client.table('repository_metadata').select('*').limit(1).execute()
+                    
                 if res.data:
                     meta = res.data[0]
                     # Enrich with live symbol/embedding counts

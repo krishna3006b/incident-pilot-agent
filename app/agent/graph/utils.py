@@ -94,7 +94,7 @@ def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, ta
         "incident_id": incident_id,
         "status": "PENDING",
         "verdict": "UNKNOWN",
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "started_at": datetime.now(timezone.utc).isoformat()
     })
 
     if not github_token:

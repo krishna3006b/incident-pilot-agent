@@ -354,10 +354,10 @@ async def handle_sandbox_result(request: Request):
     Receives test verdict (PASS/FAIL) and authenticates via secret.
     """
     secret = request.headers.get("X-Sandbox-Secret")
-    expected_secret = os.getenv("WEBHOOK_SECRET")
+    expected_secret = os.getenv("GITHUB_WEBHOOK_SECRET")
     
     if not expected_secret:
-        logger.error("WEBHOOK_SECRET is not configured on the server")
+        logger.error("GITHUB_WEBHOOK_SECRET is not configured on the server")
         raise HTTPException(status_code=500, detail="Server configuration error")
     
     if secret != expected_secret:

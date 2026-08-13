@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://via.placeholder.com/150x150/09090b/ffffff?text=IP" alt="IncidentPilot Logo" width="120" />
+  <img src="logo.svg" alt="IncidentPilot Logo" width="120" />
 
   # IncidentPilot 🚨
   

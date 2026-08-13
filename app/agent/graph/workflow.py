@@ -68,15 +68,31 @@ def run_incident_orchestrator(incident_id: str, service_name: str, summary: str)
     }
 
     if orchestrator_graph:
-        return orchestrator_graph.invoke(initial_state)
+        try:
+            return orchestrator_graph.invoke(initial_state)
+        except Exception as e:
+            logger.error(f"Agent orchestration failed for incident {incident_id}: {e}")
+            from app.db.supabase import update_incident_status
+            update_incident_status(incident_id, "FAILED")
+            initial_state["status"] = "FAILED"
+            initial_state["error"] = str(e)
+            return initial_state
 
-    state = node_validate(initial_state)
-    state = node_investigate(state)
-    state = node_diagnose(state)
-    state = node_fix(state)
-    state = node_test(state)
-    if "fail" in state.get("test_results", "").lower() or "error" in state.get("test_results", "").lower():
-        state = node_failed(state)
-    else:
-        state = node_create_pr(state)
-    return state
+    try:
+        state = node_validate(initial_state)
+        state = node_investigate(state)
+        state = node_diagnose(state)
+        state = node_fix(state)
+        state = node_test(state)
+        if "fail" in state.get("test_results", "").lower() or "error" in state.get("test_results", "").lower():
+            state = node_failed(state)
+        else:
+            state = node_create_pr(state)
+        return state
+    except Exception as e:
+        logger.error(f"Agent orchestration failed for incident {incident_id}: {e}")
+        from app.db.supabase import update_incident_status
+        update_incident_status(incident_id, "FAILED")
+        initial_state["status"] = "FAILED"
+        initial_state["error"] = str(e)
+        return initial_state

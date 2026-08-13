@@ -33,6 +33,11 @@ jobs:
         run: |
           CALLBACK_URL="${{ github.event.client_payload.callback_url }}"
           
+          if [ -z "$CALLBACK_URL" ]; then
+            echo "No CALLBACK_URL provided, skipping result reporting."
+            exit 0
+          fi
+          
           if [ "${{ job.status }}" == "success" ]; then
             VERDICT="PASS"
           else

@@ -77,7 +77,7 @@ def find_and_read_target_code(alert_summary: str) -> Tuple[str, str]:
 
     return rel_path, combined_content
 
-def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, target_branch: str = "main", callback_url: str = "") -> bool:
+def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, target_branch: str = "main", callback_url: str = "", setup_cmd: str = "", build_cmd: str = "", test_cmd: str = "") -> bool:
     """Trigger GitHub Actions sandbox-test.yml via repository_dispatch on agent repo."""
     github_token = os.getenv("GITHUB_TOKEN")
     agent_repo = os.getenv("AGENT_REPO", "")
@@ -100,7 +100,10 @@ def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, ta
                     "target_file": target_file,
                     "target_branch": target_branch,
                     "patch_code": patch_code[:5000],
-                    "callback_url": callback_url
+                    "callback_url": callback_url,
+                    "setup_command": setup_cmd,
+                    "build_command": build_cmd,
+                    "test_command": test_cmd
                 }
             },
             timeout=10.0
@@ -151,6 +154,9 @@ def _detect_language_and_framework(rel_path: str, code_content: str) -> Dict[str
             "language": "Java",
             "framework": "Spring Boot / Java EE" if "@" in code_content or "springframework" in code_content else "Java",
             "code_block_lang": "java",
+            "setup_cmd": "",
+            "build_cmd": "./mvnw package -DskipTests",
+            "test_cmd": "./mvnw test",
             "rules": (
                 "1. Target file is a Java class.\n"
                 "2. Preserve all Java package declarations, imports, annotations (e.g. `@RestController`, `@PostMapping`), and class signatures.\n"
@@ -163,6 +169,9 @@ def _detect_language_and_framework(rel_path: str, code_content: str) -> Dict[str
             "language": "Python",
             "framework": "FastAPI" if "fastapi" in code_content.lower() or "basemodel" in code_content.lower() else "Python",
             "code_block_lang": "python",
+            "setup_cmd": "pip install -r requirements.txt",
+            "build_cmd": "",
+            "test_cmd": "pytest",
             "rules": (
                 "1. Target file is a Python module.\n"
                 "2. Preserve all function signatures, imports, and Pydantic schemas.\n"
@@ -171,11 +180,17 @@ def _detect_language_and_framework(rel_path: str, code_content: str) -> Dict[str
             )
         }
     elif ext in ("ts", "tsx", "js", "jsx"):
+        base_ts = {
+            "setup_cmd": "npm ci || npm install",
+            "build_cmd": "npx tsc --noEmit",
+            "test_cmd": "npm test"
+        }
         if "next/server" in code_content or "nextresponse" in code_content.lower() or "app/api/" in rel_path:
             return {
                 "language": "TypeScript (Next.js App Router)",
                 "framework": "Next.js App Router",
                 "code_block_lang": "typescript",
+                **base_ts,
                 "rules": (
                     "1. Target file is a Next.js App Router API route (`src/app/api/.../route.ts`).\n"
                     "2. You MUST use Next.js App Router format:\n"
@@ -193,6 +208,7 @@ def _detect_language_and_framework(rel_path: str, code_content: str) -> Dict[str
                 "language": "TypeScript (Express.js)",
                 "framework": "Express.js",
                 "code_block_lang": "typescript",
+                **base_ts,
                 "rules": (
                     "1. Target file is an Express.js router module.\n"
                     "2. Preserve existing Express router handlers (`req: Request, res: Response`).\n"
@@ -205,6 +221,7 @@ def _detect_language_and_framework(rel_path: str, code_content: str) -> Dict[str
                 "language": "TypeScript / JavaScript",
                 "framework": "Generic TS/JS",
                 "code_block_lang": "typescript",
+                **base_ts,
                 "rules": (
                     "1. Preserve existing module exports and function signatures.\n"
                     "2. Add optional chaining `?.` or default fallbacks `||` for property dereferences.\n"
@@ -216,6 +233,9 @@ def _detect_language_and_framework(rel_path: str, code_content: str) -> Dict[str
             "language": ext.upper() if ext else "Generic",
             "framework": "Generic",
             "code_block_lang": ext if ext else "text",
+            "setup_cmd": "",
+            "build_cmd": "",
+            "test_cmd": "make test || echo 'No tests'",
             "rules": (
                 "1. Preserve existing code structure and signatures.\n"
                 "2. Fix unsafe property dereferences safely."

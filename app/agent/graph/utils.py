@@ -97,9 +97,9 @@ def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, ta
         "started_at": datetime.now(timezone.utc).isoformat()
     })
 
-    if not github_token:
-        logger.warning("No GITHUB_TOKEN set, skipping sandbox trigger.")
-        return sandbox_run_id
+    if not github_token or not agent_repo:
+        logger.warning(f"Missing GITHUB_TOKEN or AGENT_REPO, skipping sandbox trigger. agent_repo='{agent_repo}'")
+        return None
 
     try:
         resp = httpx.post(
@@ -128,12 +128,13 @@ def trigger_sandbox_test(incident_id: str, target_file: str, patch_code: str, ta
             logger.info(f"Sandbox test triggered on {agent_repo} for run {sandbox_run_id}")
             from app.db.supabase import update_sandbox_run
             update_sandbox_run(sandbox_run_id, {"status": "RUNNING"})
+            return sandbox_run_id
         else:
             logger.warning(f"Sandbox trigger for {agent_repo} returned {resp.status_code}: {resp.text}")
+            return None
     except Exception as e:
         logger.warning(f"Sandbox trigger failed: {e}")
-        
-    return sandbox_run_id
+        return None
 
 def _calculate_evidence_confidence(alert_summary: str, rel_path: str, code_content: str, root_cause: str) -> float:
     """Calculate confidence score from evidence quality signals."""

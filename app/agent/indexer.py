@@ -387,6 +387,9 @@ class RepositoryIndexer:
         # Resumable: skip already-processed files
         already_processed = set(self._get_processed_files(job_id))
 
+        processed_files = list(already_processed)
+        failed_files = []
+        all_symbols = []
         file_contents = {}
 
         for full_path, rel_path in all_file_paths:

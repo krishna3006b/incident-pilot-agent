@@ -41,7 +41,7 @@ jobs:
 
           curl -X POST "$CALLBACK_URL" \
           -H "Content-Type: application/json" \
-          -H "X-Sandbox-Secret: ${{ secrets.GITHUB_WEBHOOK_SECRET }}" \
+          -H "X-Sandbox-Secret: ${{ secrets.WEBHOOK_SECRET }}" \
           -d "{
             \"incident_id\": \"${{ github.event.client_payload.incident_id }}\",
             \"sandbox_run_id\": \"${{ github.event.client_payload.sandbox_run_id }}\",

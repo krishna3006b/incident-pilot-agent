@@ -361,7 +361,7 @@ async def handle_sandbox_result(request: Request):
         raise HTTPException(status_code=500, detail="Server configuration error")
     
     if secret != expected_secret:
-        logger.warning("Rejected unauthorized sandbox webhook request")
+        logger.warning(f"Rejected unauthorized sandbox webhook request. Received secret length: {len(secret) if secret else 0}, Expected length: {len(expected_secret) if expected_secret else 0}")
         raise HTTPException(status_code=401, detail="Unauthorized")
         
     body = await request.json()

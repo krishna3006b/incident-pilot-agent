@@ -19,6 +19,10 @@ IncidentPilot turns production incidents into evidence-backed, tested GitHub pul
 
 ## 🎥 Demo
 
+**Live Instances:**
+- 🕵️‍♂️ **IncidentPilot Dashboard:** [https://incident-pilot.krishnavarshney.in/](https://incident-pilot.krishnavarshney.in/)
+- 🛒 **Target App (Simulated Env):** [https://orders-app.krishnavarshney.in/](https://orders-app.krishnavarshney.in/)
+
 https://github.com/user-attachments/assets/a5bab596-6554-41c4-9c07-03ce7c2d2826
 
 ## 🧩 The Problem

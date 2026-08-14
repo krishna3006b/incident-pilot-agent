@@ -304,12 +304,18 @@ async def handle_github_webhook(request: Request):
     action = body.get("action")
 
     # Handle PR Comment Feedback (Verified Human Feedback)
-    if action == "created" and "comment" in body and "pull_request" in body:
-        comment_body = body["comment"]["body"]
-        pr_url = body["pull_request"]["html_url"]
-
-        incidents = get_incidents()
-        matched_incident = next((inc for inc in incidents if inc.get("pr_url") == pr_url), None)
+    if action == "created" and "comment" in body:
+        pr_url = None
+        if "pull_request" in body:
+            pr_url = body["pull_request"]["html_url"]
+        elif "issue" in body and "pull_request" in body["issue"]:
+            # GitHub treats top-level PR comments as 'issue_comment' events
+            pr_url = body["issue"]["pull_request"].get("html_url") or body["issue"]["html_url"]
+            
+        if pr_url:
+            comment_body = body["comment"]["body"]
+            incidents = get_incidents()
+            matched_incident = next((inc for inc in incidents if inc.get("pr_url") == pr_url), None)
 
         if matched_incident:
             update_incident_status(matched_incident["id"], "CHANGES_REQUESTED")

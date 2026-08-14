@@ -19,7 +19,7 @@ IncidentPilot turns production incidents into evidence-backed, tested GitHub pul
 
 ## 🎥 Demo
 
-<video src="demo.mp4" controls width="100%"></video>
+https://github.com/krishna3006b/incident-pilot-agent/raw/master/demo.mp4
 
 ## 🧩 The Problem
 Production incidents often require engineers to correlate alerts, logs, deployments, code changes, and historical incidents before writing and validating a fix. IncidentPilot automates this investigation loop while keeping the final code change under human review. 

@@ -19,14 +19,13 @@ IncidentPilot turns production incidents into evidence-backed, tested GitHub pul
 
 ## 🎥 Demo
 
-> [!NOTE]  
-> *(Insert 30-60 second GIF/video here showing: Slack alert ↓ Dashboard incident ↓ Knowledge retrieval ↓ Diagnosis ↓ Patch ↓ Sandbox result ↓ GitHub PR)*
+<video src="demo.mp4" controls width="100%"></video>
 
 ## 🧩 The Problem
 Production incidents often require engineers to correlate alerts, logs, deployments, code changes, and historical incidents before writing and validating a fix. IncidentPilot automates this investigation loop while keeping the final code change under human review. 
 
 ## 🌟 What makes IncidentPilot different?
-Most coding agents begin with the incident prompt and search the repository on demand. IncidentPilot starts by building repository knowledge—symbols, semantic code embeddings, dependencies, runbooks and incident history—then constructs a bounded evidence packet for each incident.
+Most coding agents begin with the incident prompt and search the repository on demand. IncidentPilot starts by building repository knowledge - symbols, semantic code embeddings, dependencies, runbooks and incident history - then constructs a bounded evidence packet for each incident.
 
 The agent is therefore reasoning over selected evidence rather than the entire repository, while still having access to bounded follow-up retrieval when necessary.
 
